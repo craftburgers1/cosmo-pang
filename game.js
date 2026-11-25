@@ -4,7 +4,7 @@
 
 // ───────────────────────── 기본 상수 ─────────────────────────
 const COLS = 7, ROWS = 8, NT = 6;
-const START_TIME = 60, DRAG_TIME = 4, MAX_CHARGE = 3, STAGE_BONUS_TIME = 15, PLAY_COST = 10, COMET_COST = 15;
+const START_TIME = 60, MAX_CHARGE = 3, STAGE_BONUS_TIME = 15, PLAY_COST = 10, COMET_COST = 15;
 const FREE_PLAYS = 10;             // 하루 무료 플레이 (KST 자정 리셋)
 const COMET_MAX = 3;               // ☄ 혜성 폭탄: 한 판(게임 1회)당 최대 사용 횟수. 첫 1회 무료, 이후 1회당 COMET_COST
 const NAT_COMET_PER_STAGE = 1, CHARGE_REFUND_PER_STAGE = 1;   // 자동 지급 아이템 횟수 제한
@@ -160,7 +160,7 @@ function glow(col) {
 // ───────────────────────── 게임 상태 ─────────────────────────
 const G = {
   state: 'home', grid: [], busy: false, stage: 1, cleared: 0, score: 0, shown: 0, combo: 0, comboT: 0, comboMax: 2.6, maxCombo: 0,
-  time: START_TIME, fever: 0, feverT: 0, drag: null, idle: 0, hint: null, left: 0, ver: 0,
+  time: START_TIME, fever: 0, feverT: 0, drag: null, sel: null, trig: [], swapping: false, moveVer: -1, idle: 0, hint: null, left: 0, ver: 0,
   grav: 'down', gravLock: 0, gravDirty: false, slosh: 0, align: false, side: { up: 0, right: 0, down: 0, left: 0 },
   orbitDays: 0, cometT: 15, cometQ: false, shake: 0, flash: 0, mascotJump: 0, lastTick: 0, earned: 0,
   dying: [], parts: [], rings: [], beams: [], texts: [], comets: [], callout: null,
@@ -192,6 +192,10 @@ function stageSpec(n) {
   return { types: Math.min(NT, 4 + Math.floor(n / 3)), holes: n < 2 ? 0 : Math.min(3, Math.ceil(n / 2)), bombs: n < 2 ? 0 : Math.min(4, Math.floor(n / 2)), fuse: Math.max(10, 22 - n) };
 }
 function buildStage() {
+  for (let tries = 0; tries < 30; tries++) { fillStage(); if (findMove()) break; }
+  stageIntro();
+}
+function fillStage() {
   const sp = stageSpec(G.stage);
   G.grid = Array.from({ length: ROWS }, () => Array(COLS).fill(null));
   const spots = []; for (let r = 1; r < ROWS - 1; r++) for (let c = 1; c < COLS - 1; c++) spots.push([r, c]);
@@ -203,13 +207,15 @@ function buildStage() {
     let t; do { t = irnd(sp.types); } while ((bt(r, c - 1) === t && bt(r, c - 2) === t) || (bt(r - 1, c) === t && bt(r - 2, c) === t));
     G.grid[r][c] = mk('b', t, r, c);
   }
+}
+function stageIntro() {
   // 반대편 우주에서 날아 들어오는 등장 연출
   const [dx, dy] = DIRS[G.grav];
   G.grid.flat().forEach(p => {
     const d = dy ? (dy > 0 ? ROWS - 1 - p.ty : p.ty) : (dx > 0 ? COLS - 1 - p.tx : p.tx);
     p.x -= dx * (COLS + 2); p.y -= dy * (ROWS + 2); tween(p, p.tx, p.ty, 380 + d * 45 + irnd(60), 1, true);
   });
-  G.time = G.stageTime = Math.max(36, START_TIME - (G.stage - 1) * 3); G.charges = 2; G.refundLeft = CHARGE_REFUND_PER_STAGE; G.natLeft = NAT_COMET_PER_STAGE; G.cometT = rnd(20, 30); G.hint = null; G.idle = 0; G.drag = null; G.pdrag = null; G.ver++;
+  G.time = G.stageTime = Math.max(36, START_TIME - (G.stage - 1) * 3); G.charges = 2; G.refundLeft = CHARGE_REFUND_PER_STAGE; G.natLeft = NAT_COMET_PER_STAGE; G.cometT = rnd(20, 30); G.hint = null; G.idle = 0; G.sel = null; G.trig = []; G.pdrag = null; G.ver++;
   callout('STAGE ' + G.stage, '#3df0c8');
 }
 const remaining = () => G.grid.flat().filter(p => p && p.kind !== 'hole').length;
@@ -231,13 +237,12 @@ function findGroups() {
   const groups = [];
   for (const run of runs) {
     const ks = run.cells.map(([r, c]) => key(r, c)), hit = groups.filter(g => g.t === run.t && ks.some(k => g.keys.has(k)));
-    let g = hit[0]; if (!g) { g = { t: run.t, keys: new Set(), runs: [] }; groups.push(g); }
+    let g = hit[0]; if (!g) { g = { t: run.t, keys: new Set(), runs: [], line: true }; groups.push(g); }
     for (const h of hit.slice(1)) { h.keys.forEach(k => g.keys.add(k)); g.runs.push(...h.runs); groups.splice(groups.indexOf(h), 1); }
     ks.forEach(k => g.keys.add(k)); g.runs.push(run);
   }
   return groups;
 }
-// 한 칸만 옮겨도 맞는 수 찾기 (힌트용)
 // 중력 파도 중에는 줄이 아니어도 같은 행성 3개 이상이 붙어 뭉치면 터진다
 function findClusters() {
   const cnt = typeCounts(), seen = new Set(), groups = [];
@@ -245,17 +250,9 @@ function findClusters() {
     const t = bt(r, c); if (t < 0 || seen.has(key(r, c))) continue;
     const out = [[r, c]]; seen.add(key(r, c));
     for (let i = 0; i < out.length; i++) for (const [dr, dc] of NB) { const r2 = out[i][0] + dr, c2 = out[i][1] + dc; if (bt(r2, c2) === t && !seen.has(key(r2, c2))) { seen.add(key(r2, c2)); out.push([r2, c2]); } }
-    if (out.length >= (cnt[t] <= 2 ? 2 : 3)) groups.push({ t, keys: new Set(out.map(([a, b]) => key(a, b))), runs: [{ t, o: 'h', i: r, cells: out.slice(0, Math.min(out.length, 3)) }] });
+    if (out.length >= (cnt[t] <= 2 ? 2 : 3)) groups.push({ t, keys: new Set(out.map(([a, b]) => key(a, b))), runs: [], line: false });
   }
   return groups;
-}
-function findHintMove() {
-  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) for (const [dr, dc] of [[0, 1], [1, 0]]) {
-    const a = at(r, c), b = at(r + dr, c + dc); if (!a || a.kind === 'hole' || (b && b.kind === 'hole') || r + dr >= ROWS || c + dc >= COLS) continue;
-    G.grid[r][c] = b; G.grid[r + dr][c + dc] = a; const ok = findGroups().length > 0; G.grid[r][c] = a; G.grid[r + dr][c + dc] = b;
-    if (ok) return [[r, c], [r + dr, c + dc]];
-  }
-  return null;
 }
 function lineOrder(dir) {
   const [dx, dy] = DIRS[dir], vertical = dy !== 0, len = vertical ? ROWS : COLS, sgn = vertical ? dy : dx;
@@ -299,7 +296,8 @@ const mult = () => (G.waveMult || 1) * (1 + (Math.min(G.combo, 25) - 1) * 0.5) *
 function kill(r, c) {
   const p = G.grid[r][c]; if (!p) return null;
   G.grid[r][c] = null; G.dying.push({ p, t: 0 }); G.ver++;
-  burst(cellX(c), cellY(r), p.kind === 'b' ? TYPES[p.t].col : p.kind === 'hole' ? '#c9a0ff' : '#b6ff3a', 7 + Math.min(8, G.combo));
+  if (p.kind === 'nova' ? !p.used : p.item) G.trig.push({ item: p.kind === 'nova' ? 'nova' : p.item, r, c });
+  burst(cellX(c), cellY(r), p.kind === 'b' ? TYPES[p.t].col : p.kind === 'hole' ? '#c9a0ff' : p.kind === 'nova' ? '#ffffff' : '#b6ff3a', 7 + Math.min(8, G.combo));
   return p;
 }
 function addScore(pts, x, y, size = 20) {
@@ -315,7 +313,7 @@ function blast(r, c, good) {
 }
 function timeBonus(sec, x, y) { G.time = Math.min(99, G.time + sec); G.texts.push({ x, y, s: `+${sec}초`, t: -0.15, size: 20, col: '#3df0c8' }); }
 // 매치된 묶음을 하나씩 차례로 터뜨림 (묶음마다 콤보 +1)
-async function popGroups(groups) {
+async function popGroups(groups, pref) {
   for (const g of groups) {
     const cells = [...g.keys].map(k => [Math.floor(k / COLS), k % COLS]).filter(([r, c]) => at(r, c));
     if (!cells.length) continue;
@@ -333,26 +331,28 @@ async function popGroups(groups) {
       const br = Math.floor(k / COLS), bc = k % COLS; if (!at(br, bc)) continue;
       blast(br, bc, true); addScore(300 * mult(), cellX(bc), cellY(br) - 14, 24); timeBonus(2, cellX(bc), cellY(br) + 16); callout('외계행성 해체!', '#b6ff3a');
     }
-    // 큰 매치 보너스
-    const longest = g.runs.reduce((a, b) => b.cells.length > a.cells.length ? b : a);
-    const cross = g.runs.some(r => r.o === 'h') && g.runs.some(r => r.o === 'v');
-    if (longest.cells.length >= 5) {          // 5개: 초신성 — 같은 행성 전부 소멸
-      let got = 0; G.grid.forEach((row, r) => row.forEach((q, c) => { if (q && q.kind === 'b' && q.t === g.t) { kill(r, c); got++; } }));
-      Snd.nova(); G.flash = 0.5; G.rings.push({ x: sx / n, y: sy / n, t: 0, max: L.cs * 6, col: '#fff' }); callout('초신성!', '#ffd23a');
-      if (got) addScore(got * 60 * mult(), L.W / 2, L.by + L.bh / 2, 26); timeBonus(4, sx / n, sy / n + 22);
-    } else if (cross) {                       // ㄱ/ㅗ 모양: 점수 3배 + 3초
-      addScore(n * (n - 1) * 30 * mult(), sx / n, sy / n - 26, 24); timeBonus(3, sx / n, sy / n + 22);
-      G.rings.push({ x: sx / n, y: sy / n, t: 0, max: L.cs * 2.8, col: '#ffb03a' }); Snd.special(); G.flash = 0.25; callout('행성 충돌!', '#ffb03a');
-    } else if (longest.cells.length === 4) {  // 4개: 점수 2배 + 2초
-      addScore(n * (n - 1) * 15 * mult(), sx / n, sy / n - 26, 22); timeBonus(2, sx / n, sy / n + 22); Snd.special();
+    // 4개 = 혜성 블록(그 줄을 지움), 5개 이상 또는 ㄱ/ㅗ 모양 = 초신성 블록. 줄 매치(g.line)에서만 생김
+    if (g.line) {
+      const longest = g.runs.reduce((a, b) => b.cells.length > a.cells.length ? b : a), len = longest.cells.length;
+      const cross = g.runs.some(r => r.o === 'h') && g.runs.some(r => r.o === 'v');
+      const kind = len >= 5 || (cross && n >= 5) ? 'nova' : len === 4 ? longest.o : '';
+      if (kind) {
+        const spot = (pref || []).find(([r, c]) => g.keys.has(key(r, c))) || longest.cells[Math.floor(len / 2)], [ir, ic] = spot;
+        if (!at(ir, ic)) {
+          const it = kind === 'nova' ? mk('nova', -1, ir, ic) : mk('b', g.t, ir, ic); if (kind !== 'nova') it.item = kind; it.squash = 1; G.grid[ir][ic] = it; G.ver++;
+          G.rings.push({ x: cellX(ic), y: cellY(ir), t: 0, max: L.cs * 1.6, col: '#ffe08a' }); Snd.special(); G.items = (G.items || 0) + 1;
+          G.texts.push({ x: cellX(ic), y: cellY(ir) - L.cs * 0.7, s: kind === 'nova' ? '초신성 블록!' : '혜성 블록!', t: -0.1, size: 18, col: '#ffe08a' });
+        }
+      }
     }
+    await runTriggers();
     await sleep(190);
   }
 }
 // 평소엔 무중력: 터져도 블록은 제자리에 떠 있다.
 // wave=true(중력 파도)일 때만 전부 한쪽으로 쏟아지고, 부딪혀 맞은 줄이 연쇄로 터진다 (연쇄마다 배율 +1, +2초)
-async function resolve(wave) {
-  G.chain = 0; G.waveMult = 1;
+async function resolve(wave, pref) {
+  G.chain = 0; G.waveMult = 1; await runTriggers();
   if (wave) {
     let k = 0; Snd.whoosh(); G.shake = Math.max(G.shake, 8); buzz(30);
     for (let guard = 0; guard < 40 && G.state === 'play'; guard++) {
@@ -369,41 +369,108 @@ async function resolve(wave) {
   }
   for (let guard = 0; guard < 60 && G.state === 'play'; guard++) {
     const g = findGroups();
-    if (g.length) { await popGroups(g); continue; }
+    if (g.length) { await popGroups(g, pref); pref = null; continue; }
+    if (G.trig.length) { await runTriggers(); continue; }
     const cnt = typeCounts(); let lone = false;
     G.grid.forEach((row, r) => row.forEach((p, c) => {      // 혼자 남은 행성은 스스로 사라짐
       if (p && p.kind === 'b' && cnt[p.t] === 1) { kill(r, c); addScore(100 * mult(), cellX(c), cellY(r), 18); lone = true; }
     }));
-    if (!lone && !cnt.some(Boolean)) G.grid.forEach((row, r) => row.forEach((p, c) => { if (p && p.kind === 'bomb' && at(r, c)) { blast(r, c, true); addScore(300 * mult(), cellX(c), cellY(r), 22); lone = true; } }));
+    if (!lone && !cnt.some(Boolean)) G.grid.forEach((row, r) => row.forEach((p, c) => { if (p && p.kind === 'bomb' && at(r, c)) { blast(r, c, true); addScore(300 * mult(), cellX(c), cellY(r), 22); lone = true; } else if (p && p.kind === 'nova' && at(r, c)) { p.used = true; kill(r, c); addScore(500 * mult(), cellX(c), cellY(r), 22); lone = true; } }));
     if (lone) { Snd.special(); await sleep(220); continue; }
     break;
   }
   if (G.state === 'play' && remaining() === 0) await stageClear();
 }
-// ── 끌기: 블록 하나를 잡고 끌면 지나가는 블록과 자리가 바뀐다
-function dragStart(r, c) {
-  const p = at(r, c); if (G.state !== 'play' || G.busy || G.drag || !p || p.kind === 'hole') return false;
-  G.drag = { p, r, c, t: DRAG_TIME, moved: false, px: cellX(c), py: cellY(r) }; G.hint = null; G.idle = 0; return true;
-}
-function dragTo(tr, tc) {
-  const d = G.drag; if (!d) return;
-  tr = Math.max(0, Math.min(ROWS - 1, tr)); tc = Math.max(0, Math.min(COLS - 1, tc));
-  for (let guard = 0; guard < 16 && (d.r !== tr || d.c !== tc); guard++) {
-    const dr = Math.sign(tr - d.r), dc = Math.sign(tc - d.c);
-    const opts = Math.abs(tr - d.r) >= Math.abs(tc - d.c) ? [[dr, 0], [0, dc]] : [[0, dc], [dr, 0]];
-    const step = opts.find(([a, b]) => (a || b) && !(at(d.r + a, d.c + b) && at(d.r + a, d.c + b).kind === 'hole'));
-    if (!step) break;                               // 블랙홀은 지나갈 수 없음
-    const nr = d.r + step[0], nc = d.c + step[1], q = at(nr, nc);
-    G.grid[d.r][d.c] = q; if (q) tween(q, d.c, d.r, 90);
-    G.grid[nr][nc] = d.p; d.p.tx = d.p.x = nc; d.p.ty = d.p.y = nr; d.p.td = 0; d.r = nr; d.c = nc; d.moved = true; G.ver++;
-    Snd.swap();
+// 아이템 블록이 부서지면 발동 대기열에 들어가고, runTriggers가 차례로 터뜨린다
+async function runTriggers() {
+  for (let guard = 0; guard < 30 && G.trig.length; guard++) {
+    const t = G.trig.shift();
+    if (t.item === 'nova') await novaBlast(-1, t.c, t.r);
+    else { callout('혜성 블록!', '#9fe8ff'); await sweep([[t.item, t.item === 'h' ? t.r : t.c]]); }
   }
 }
-async function dragEnd() {
-  const d = G.drag; if (!d) return; G.drag = null;
-  d.p.x = (d.px - L.bx) / L.cs - 0.5; d.p.y = (d.py - L.by) / L.cs - 0.5; tween(d.p, d.c, d.r, 90);
-  if (!d.moved) return;
-  G.busy = true; await sleep(100); await resolve(false); G.busy = false;
+// 초신성: 한 종류의 행성을 전부 소멸 (t<0이면 보드에 가장 많은 행성)
+async function novaBlast(t, c, r) {
+  const cnt = typeCounts(); if (t < 0 || !cnt[t]) t = cnt.indexOf(Math.max(...cnt));
+  let got = 0; if (cnt[t]) G.grid.forEach((row, rr) => row.forEach((q, cc) => { if (q && q.kind === 'b' && q.t === t) { kill(rr, cc); got++; } }));
+  Snd.nova(); G.flash = 0.5; G.shake = Math.min(18, G.shake + 9); G.rings.push({ x: cellX(c), y: cellY(r), t: 0, max: L.cs * 6, col: '#fff' }); callout('초신성 폭발!', '#ffd23a');
+  if (got) addScore(got * 50 * mult(), L.W / 2, L.by + L.bh / 2, 26);
+  await sleep(260);
+}
+// 아이템 바로 쓰기 (선택한 아이템을 한 번 더 탭)
+async function useItem(r, c) {
+  const p = at(r, c); if (G.state !== 'play' || G.busy || !p || !(p.item || p.kind === 'nova')) return;
+  G.busy = true; G.sel = null; G.hint = null; G.idle = 0; bumpCombo();
+  if (p.kind === 'nova') { p.used = true; kill(r, c); await novaBlast(-1, c, r); } else kill(r, c);
+  await resolve(false); G.busy = false;
+}
+// ── 인접 한 칸 교환. 3개 이상 줄이 맞거나 아이템이 끼어 있을 때만 유효, 아니면 원위치
+const movable = p => p && p.kind !== 'hole';
+async function trySwap(r1, c1, r2, c2) {
+  if (G.state !== 'play' || G.busy || G.pdrag) return false;
+  if (r2 < 0 || r2 >= ROWS || c2 < 0 || c2 >= COLS || Math.abs(r1 - r2) + Math.abs(c1 - c2) !== 1) return false;
+  const a = at(r1, c1), b = at(r2, c2);
+  if (!movable(a) || (b && !movable(b))) { if (a) a.squash = 1; Snd.bad(); return false; }
+  G.busy = true; G.swapping = true; G.sel = null; G.hint = null; G.idle = 0;
+  const put = (x, y) => { G.grid[r1][c1] = x; G.grid[r2][c2] = y; if (x) tween(x, c1, r1, 120); if (y) tween(y, c2, r2, 120); G.ver++; };
+  put(b, a); Snd.swap(); await sleep(130);
+  const nova = a.kind === 'nova' ? a : b && b.kind === 'nova' ? b : null, hasItem = !!(nova || a.item || (b && b.item));
+  const groups = findGroups().filter(g => g.keys.has(key(r1, c1)) || g.keys.has(key(r2, c2)));
+  if (!groups.length && !hasItem) {          // 무효: 되돌리기 (시간은 흐르지 않음)
+    put(a, b); Snd.bad(); await sleep(130); G.swapping = false; G.busy = false; return false;
+  }
+  G.swapping = false;
+  if (nova) {                                 // 초신성 블록: 맞바꾼 행성 종류를 전부 소멸
+    const other = nova === a ? b : a, nr = nova === a ? r2 : r1, nc = nova === a ? c2 : c1;
+    bumpCombo(); nova.used = true; kill(nr, nc);
+    if (other && other.kind === 'nova') {      // 초신성 + 초신성 = 보드 전체
+      other.used = true; G.grid.forEach((row, r) => row.forEach((q, c) => { if (q && q.kind !== 'hole') kill(r, c); }));
+      Snd.nova(); G.flash = 0.6; callout('빅뱅!!!!', '#ffd23a'); addScore(3000 * mult(), L.W / 2, L.by + L.bh / 2, 30); await sleep(300);
+    } else await novaBlast(other && other.kind === 'b' ? other.t : -1, nc, nr);
+  } else if (a.item || (b && b.item)) {       // 혜성 블록은 옮기기만 해도 발동
+    if (!groups.length) bumpCombo();
+    if (a.item) kill(r2, c2); if (b && b.item && at(r1, c1) === b) kill(r1, c1);
+  }
+  await resolve(false, [[r2, c2], [r1, c1]]);
+  G.busy = false; return true;
+}
+// 옮길 수 있는 유효한 수 찾기 (힌트·자동 셔플 판정용)
+function findMove() {
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) for (const [dr, dc] of [[0, 1], [1, 0]]) {
+    const r2 = r + dr, c2 = c + dc; if (r2 >= ROWS || c2 >= COLS) continue;
+    const a = at(r, c), b = at(r2, c2); if ((!a && !b) || (a && !movable(a)) || (b && !movable(b))) continue;
+    if ((a && (a.item || a.kind === 'nova')) || (b && (b.item || b.kind === 'nova'))) return [[r, c], [r2, c2]];
+    G.grid[r][c] = b; G.grid[r2][c2] = a; const ok = findGroups().some(g => g.keys.has(key(r, c)) || g.keys.has(key(r2, c2))); G.grid[r][c] = a; G.grid[r2][c2] = b;
+    if (ok) return [[r, c], [r2, c2]];
+  }
+  return null;
+}
+// 자동 셔플: 유효한 수가 하나도 없을 때. 섞은 뒤 바로 터지는 줄은 없고 유효한 수는 최소 1개 보장
+async function shuffleBoard() {
+  G.busy = true; G.sel = null; G.hint = null;        // 섞는 동안에도 제한 시간은 흐름
+  const pieces = [], cells = [];
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) { const p = G.grid[r][c]; if (p && p.kind === 'hole') continue; cells.push([r, c]); if (p) pieces.push(p); }
+  const place = order => { cells.forEach(([r, c]) => { G.grid[r][c] = null; }); order.forEach((cell, i) => { G.grid[cell[0]][cell[1]] = pieces[i]; }); };
+  const mix = arr => { for (let i = arr.length - 1; i > 0; i--) { const j = irnd(i + 1); [arr[i], arr[j]] = [arr[j], arr[i]]; } return arr; };
+  let ok = false;
+  for (let tries = 0; tries < 250 && !ok; tries++) { place(mix(cells.slice()).slice(0, pieces.length)); ok = !findGroups().length && !!findMove(); }
+  if (!ok) {     // 블록이 몇 개 안 남았을 때: 같은 행성을 "■■_■"(2개뿐이면 "■_■") 모양으로 놓아 한 수를 확실히 만든다
+    const cnt = typeCounts(), t = cnt.indexOf(Math.max(...cnt)), same = pieces.filter(p => p.kind === 'b' && p.t === t), rest = pieces.filter(p => !same.includes(p));
+    const spots = [];
+    for (let r = 0; r < ROWS; r++) for (let c = 0; c + 3 < COLS; c++) if ([0, 1, 2, 3].every(k => !(G.grid[r][c + k] && G.grid[r][c + k].kind === 'hole'))) spots.push([r, c]);
+    for (let tries = 0; tries < 200 && !ok && spots.length; tries++) {
+      const [r, c] = spots[irnd(spots.length)], seat = same.length >= 3 ? [[r, c], [r, c + 1], [r, c + 3]] : [[r, c], [r, c + 2]];
+      const gap = key(r, c + (same.length >= 3 ? 2 : 1)), used = new Set(seat.map(([a, b]) => key(a, b)));
+      const free = mix(cells.filter(([a, b]) => !used.has(key(a, b)) && key(a, b) !== gap));
+      const order = [...same.slice(0, seat.length), ...same.slice(seat.length), ...rest], pos = [...seat, ...free.slice(0, order.length - seat.length)];
+      cells.forEach(([a, b]) => { G.grid[a][b] = null; }); order.forEach((p, i) => { G.grid[pos[i][0]][pos[i][1]] = p; });
+      ok = !findGroups().length && !!findMove();
+    }
+  }
+  G.ver++; G.shuffles = (G.shuffles || 0) + 1;
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) { const p = G.grid[r][c]; if (p && p.kind !== 'hole') tween(p, c, r, 420 + irnd(120), 0); }
+  callout('다시 섞었어요', '#9fe8ff'); Snd.whoosh(); G.texts.push({ x: L.W / 2, y: L.by + L.bh * 0.62, s: '옮길 블록이 없어서 섞었어요', t: -0.2, size: 16, col: '#d6caff' });
+  await sleep(620); G.busy = false;
 }
 // 혜성이 한 줄을 쓸어감 (블록·외계행성·블랙홀 모두 제거)
 async function sweep(lines) {
@@ -500,14 +567,14 @@ async function startGame() {
   }
   S.games++; Store.save();
   Object.assign(G, { state: 'play', busy: true, stage: 1, cleared: 0, score: 0, shown: 0, combo: 0, comboT: 0, maxCombo: 0, fever: 0, feverT: 0,
-    drag: null, pdrag: null, maxWave: 0, waveMult: 1, usedPlanet: false, cometQ: false, cometUsed: 0, cometPaying: false, runId, shake: 0, earned: 0, orbitDays: realOrbitDays(), gravLock: 1.5, gravDirty: false,
+    drag: null, sel: null, trig: [], swapping: false, shuffles: 0, items: 0, pdrag: null, maxWave: 0, waveMult: 1, usedPlanet: false, cometQ: false, cometUsed: 0, cometPaying: false, runId, shake: 0, earned: 0, orbitDays: realOrbitDays(), gravLock: 1.5, gravDirty: false,
     dying: [], parts: [], rings: [], beams: [], texts: [], comets: [], callout: null });
   PLANETS.forEach(p => { p.off = 0; }); updateGravity(0, true); buildStage();
   $('home').classList.add('hidden'); $('hud').classList.remove('hidden'); closeModal(); refreshMeta();
   setTimeout(() => { if (G.state === 'play') G.busy = false; }, 900);
 }
 async function failStage(why) {
-  G.state = 'ending'; G.busy = true; G.drag = null; G.pdrag = null;
+  G.state = 'ending'; G.busy = true; G.sel = null; G.pdrag = null;
   callout('STAGE ' + G.stage + ' 실패', '#ff5252'); Snd.over(); G.shake = 10; await sleep(1500);
   const isBest = G.score > S.best;
   G.earned = Math.min(5, G.cleared);
@@ -574,7 +641,7 @@ function updateGravity(dt, force) {
 }
 // ── 행성 끌기: 행성을 다른 변으로 옮겨 중력을 직접 바꾼다 (스테이지당 횟수 제한)
 function planetGrab(x, y) {
-  if (G.state !== 'play' || G.busy || G.drag || G.pdrag || G.charges <= 0) return false;
+  if (G.state !== 'play' || G.busy || G.pdrag || G.charges <= 0) return false;
   let best = null, bd = 30; for (const p of PLANETS) { const d = Math.hypot(p.x - x, p.y - y); if (d < bd) { bd = d; best = p; } }
   if (!best) return false;
   G.pdrag = { p: best, u: best.u }; Snd.swap(); return true;
@@ -601,7 +668,8 @@ function update(dt) {
   for (const c of G.comets) if (Math.random() < 0.9) { const k = Math.min(1, c.t / 0.4); G.parts.push({ x: c.x0 + (c.x1 - c.x0) * k, y: c.y0 + (c.y1 - c.y0) * k, vx: rnd(-60, 60), vy: rnd(-60, 60), life: 0, max: rnd(0.3, 0.7), size: rnd(8, 22), col: Math.random() < 0.5 ? '#9fe8ff' : '#ffffff' }); }
   $('hudScore').textContent = fmt(G.shown);
   if (G.state !== 'play') return;
-  G.time -= dt; G.left = remaining();
+  if (!G.swapping) G.time -= dt;          // 교환이 유효한지 판정하고 되돌리는 동안에는 시간이 흐르지 않음
+  G.left = remaining();
   if (G.feverT > 0) { G.feverT -= dt; G.fever = Math.max(0, G.feverT / 8 * 100); }
   let act = null;
   G.grid.forEach((row, r) => row.forEach((p, c) => {
@@ -609,8 +677,7 @@ function update(dt) {
     if (p.kind === 'bomb' && (p.fuse -= dt) <= 0 && !act) act = () => bombExplode(r, c);
     if (p.kind === 'hole' && (p.eat -= dt) <= 0 && !act) act = () => holeEat(r, c, p);
   }));
-  if (G.drag && G.drag.moved && (G.drag.t -= dt) <= 0) dragEnd();     // 끌기 제한 시간
-  if (!G.busy && !G.drag && !G.pdrag) {
+  if (!G.busy && !G.pdrag) {
     G.comboT -= dt; if (G.comboT <= 0) G.combo = 0;
     if (G.time <= 0) { failStage('시간 초과'); return; }
     if (G.gravDirty) { G.gravDirty = false; G.busy = true; resolve(true).then(() => { G.busy = false; }); }
@@ -618,8 +685,10 @@ function update(dt) {
     else if (G.cometQ) { G.cometQ = false; cometStrike(true); }
     else if (G.natLeft > 0 && (G.cometT -= dt) <= 0 && G.left > 0) cometStrike(false);
     else {
+      if (G.moveVer !== G.ver) { G.moveVer = G.ver; G.move = findMove(); }
+      if (!G.move && typeCounts().some(Boolean)) { shuffleBoard(); return; }          // 유효한 수가 없으면 자동 셔플
       G.idle += dt;
-      if (G.idle > 5 && !G.hint) { const m = findHintMove(); G.hint = new Set(m ? m.map(([r, c]) => G.grid[r][c] && G.grid[r][c].id) : []); }
+      if (G.idle > 5 && !G.hint && G.move) G.hint = new Set(G.move.map(([r, c]) => G.grid[r][c] && G.grid[r][c].id).filter(Boolean));
     }
   }
   if (G.time <= 5 && G.time > 0 && Math.ceil(G.time) !== G.lastTick) { G.lastTick = Math.ceil(G.time); Snd.tick(); }
@@ -740,27 +809,26 @@ function drawBoard() {
   }
   ctx.globalAlpha = 1;
   const sl = Math.sin(G.slosh * 9) * G.slosh * cs * 0.16;
-  const held = G.drag && G.drag.p;
-  for (const row of G.grid) for (const p of row) if (p && p !== held) drawPiece(p, dx * sl, dy * sl);
+  for (const row of G.grid) for (const p of row) if (p) drawPiece(p, dx * sl, dy * sl);
   for (const d of G.dying) { const k = Math.max(0, d.t) / 0.2; drawPiece(d.p, 0, 0, d.p.gone ? 1 - k * 0.8 : 1 + k * 0.5, d.p.gone ? 1 - k * 0.5 : 1 - k); }
-  if (held) {
-    const d = G.drag, hx = (d.px - bx) / cs - 0.5 - held.x, hy = (d.py - by) / cs - 0.5 - held.y;
-    ctx.fillStyle = 'rgba(255,255,255,0.10)'; rr(bx + d.c * cs + 3, by + d.r * cs + 3, cs - 6, cs - 6, 10); ctx.fill();
-    ctx.globalCompositeOperation = 'lighter'; drawGlow(d.px, d.py, cs * 2.1, held.kind === 'b' ? TYPES[held.t].col : '#b6ff3a', 0.55); ctx.globalCompositeOperation = 'source-over';
-    drawPiece(held, hx * cs, hy * cs - cs * 0.18, 1.28);
-    if (d.moved) {       // 끌기 남은 시간 고리
-      ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.strokeStyle = d.t < 1.5 ? '#ff5252' : '#ffffff';
-      ctx.beginPath(); ctx.arc(d.px, d.py - cs * 0.18, cs * 0.74, -1.5708, -1.5708 + 6.2832 * Math.max(0, d.t / DRAG_TIME)); ctx.stroke();
-    }
-  }
   ctx.restore();
+  if (G.sel) { const [r, c] = G.sel; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5; ctx.setLineDash([6, 5]); ctx.lineDashOffset = -T * 30; rr(bx + c * cs + 2, by + r * cs + 2, cs - 4, cs - 4, 11); ctx.stroke(); ctx.setLineDash([]); }
 }
 function drawPiece(p, ox = 0, oy = 0, sc = 1, alpha = 1) {
   const cs = L.cs, fixed = p.kind === 'hole';
   const x = L.bx + (p.x + 0.5) * cs + (fixed ? 0 : ox + Math.sin(T * 1.3 + p.id * 2.1) * cs * 0.022), y = L.by + (p.y + 0.5) * cs + (fixed ? 0 : oy + Math.cos(T * 1.6 + p.id) * cs * 0.028);
   let s = cs * 0.92 * sc * (1 + Math.sin(p.squash * Math.PI) * 0.14);
   if (G.hint && G.hint.has(p.id)) s *= 1 + 0.1 * Math.sin(T * 10);
+  if (G.sel && G.sel[0] === p.ty && G.sel[1] === p.tx) s *= 1.14;
   ctx.save(); ctx.translate(x, y); ctx.globalAlpha = alpha;
+  if (p.kind === 'nova') {       // 초신성 블록: 무지개 구슬
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 3; i++) { const a = T * 2.4 + i * 2.094; drawGlow(Math.cos(a) * s * 0.14, Math.sin(a) * s * 0.14, s * 0.95, TYPES[(i * 2 + Math.floor(T * 2)) % NT].col, alpha * 0.9); }
+    drawGlow(0, 0, s * 0.7, '#ffffff', alpha);
+    ctx.globalCompositeOperation = 'source-over'; ctx.rotate(T * 1.5); ctx.fillStyle = '#fff';
+    for (let i = 0; i < 4; i++) { ctx.rotate(1.5708); ctx.beginPath(); ctx.moveTo(0, -s * 0.36); ctx.lineTo(s * 0.06, 0); ctx.lineTo(-s * 0.06, 0); ctx.fill(); }
+    ctx.restore(); return;
+  }
   if (p.kind === 'hole') {
     const hungry = p.eat < 1.5 ? 1 + 0.12 * Math.sin(T * 18) : 1;
     ctx.globalCompositeOperation = 'lighter'; drawGlow(0, 0, s * 1.7 * hungry, '#a66bff', alpha * 0.6); ctx.globalCompositeOperation = 'source-over';
@@ -783,6 +851,13 @@ function drawPiece(p, ox = 0, oy = 0, sc = 1, alpha = 1) {
   ctx.rotate(Math.sin(T * 0.9 + p.id * 1.7) * 0.07);
   const im = IMG[TYPES[p.t].k];
   if (im && im.width) ctx.drawImage(im, -s / 2, -s / 2, s, s); else { ctx.fillStyle = TYPES[p.t].col; ctx.beginPath(); ctx.arc(0, 0, s * 0.4, 0, 6.2832); ctx.fill(); }
+  if (p.item) {                  // 혜성 블록: 지울 방향으로 빛줄기와 화살표
+    ctx.rotate(-Math.sin(T * 0.9 + p.id * 1.7) * 0.07); if (p.item === 'v') ctx.rotate(1.5708);
+    ctx.globalCompositeOperation = 'lighter'; const w = s * (0.52 + 0.08 * Math.sin(T * 9));
+    const g = ctx.createLinearGradient(-w, 0, w, 0); g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(0.5, 'rgba(255,255,255,0.95)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g; ctx.fillRect(-w, -s * 0.08, w * 2, s * 0.16);
+    ctx.fillStyle = '#fff'; for (const d of [-1, 1]) { ctx.beginPath(); ctx.moveTo(d * s * 0.52, 0); ctx.lineTo(d * s * 0.33, -s * 0.15); ctx.lineTo(d * s * 0.33, s * 0.15); ctx.fill(); }
+  }
   ctx.restore();
 }
 function drawFx() {
@@ -811,27 +886,38 @@ function drawFx() {
   if (G.flash > 0) { ctx.fillStyle = `rgba(255,255,255,${G.flash * 0.5})`; ctx.fillRect(0, 0, L.W, L.H); }
 }
 
-// ───────────────────────── 입력 (끌어서 옮기기) ─────────────────────────
+// ───────────────────────── 입력 (옆 칸으로 밀기 / 두 번 탭) ─────────────────────────
 function pointerCell(e) {
   const b = cv.getBoundingClientRect(), x = e.clientX - b.left, y = e.clientY - b.top;
   return [Math.floor((y - L.by) / L.cs), Math.floor((x - L.bx) / L.cs), x, y];
 }
+let press = null;       // 누른 칸. 밀면 교환, 그냥 떼면 탭
 cv.addEventListener('pointerdown', e => {
   Snd.init(); if (G.state !== 'play') return;
-  const [r, c, x, y] = pointerCell(e);
-  const inBoard = r >= 0 && r < ROWS && c >= 0 && c < COLS;
-  if (!inBoard && planetGrab(x, y)) { try { cv.setPointerCapture(e.pointerId); } catch (err) { /* 무시 */ } return; }
-  if (inBoard && dragStart(r, c)) { G.drag.px = x; G.drag.py = y; try { cv.setPointerCapture(e.pointerId); } catch (err) { /* 무시 */ } }
+  const [r, c, x, y] = pointerCell(e), inBoard = r >= 0 && r < ROWS && c >= 0 && c < COLS;
+  if (!inBoard) { G.sel = null; if (planetGrab(x, y)) { try { cv.setPointerCapture(e.pointerId); } catch (err) { /* 무시 */ } } return; }
+  press = { r, c, x, y, id: e.pointerId }; G.idle = 0;
+  try { cv.setPointerCapture(e.pointerId); } catch (err) { /* 무시 */ }
 });
 cv.addEventListener('pointermove', e => {
   if (G.pdrag) { const [, , x, y] = pointerCell(e); G.pdrag.u = trackU(x, y); return; }
-  if (!G.drag) return;
-  const [r, c, x, y] = pointerCell(e);
-  G.drag.px = Math.max(L.bx + 4, Math.min(L.bx + L.bw - 4, x)); G.drag.py = Math.max(L.by + 4, Math.min(L.by + L.bh - 4, y));
-  dragTo(r, c);
+  if (!press || e.pointerId !== press.id) return;
+  const b = cv.getBoundingClientRect(), dx = e.clientX - b.left - press.x, dy = e.clientY - b.top - press.y;
+  if (Math.max(Math.abs(dx), Math.abs(dy)) < Math.max(14, L.cs * 0.34)) return;      // 손떨림은 무시
+  const p = press; press = null; G.sel = null;
+  if (!movable(at(p.r, p.c))) return;
+  const horiz = Math.abs(dx) > Math.abs(dy);
+  trySwap(p.r, p.c, p.r + (horiz ? 0 : Math.sign(dy)), p.c + (horiz ? Math.sign(dx) : 0));
 });
-window.addEventListener('pointerup', () => { planetRelease(); dragEnd(); });
-window.addEventListener('pointercancel', () => { planetRelease(); dragEnd(); });
+function tapCell(r, c) {
+  if (G.busy) return;
+  const p = at(r, c), s = G.sel;
+  if (s && s[0] === r && s[1] === c) { G.sel = null; if (p && (p.item || p.kind === 'nova')) useItem(r, c); return; }   // 같은 칸 다시 탭: 아이템이면 사용, 아니면 선택 해제
+  if (s && Math.abs(s[0] - r) + Math.abs(s[1] - c) === 1) { G.sel = null; trySwap(s[0], s[1], r, c); return; }           // 옆 칸 탭: 교환
+  G.sel = movable(p) ? [r, c] : null; if (G.sel) Snd.swap();
+}
+window.addEventListener('pointerup', e => { planetRelease(); if (press && e.pointerId === press.id) { const p = press; press = null; if (G.state === 'play') tapCell(p.r, p.c); } });
+window.addEventListener('pointercancel', () => { planetRelease(); press = null; });
 
 // ───────────────────────── 메타 UI ─────────────────────────
 let toastTimer = 0;
@@ -896,13 +982,14 @@ function maybeDaily() {
 }
 function showHelp() {
   openModal(`<h2>게임 방법</h2><div class="help"><ul>
-    <li><b>블록을 잡고 끌어요.</b> 끌고 지나가는 블록들과 자리가 바뀝니다(${DRAG_TIME}초 제한). 손을 떼면 같은 행성이 한 줄로 3개 이상 맞은 곳이 터져요.</li>
+    <li><b>옆 칸과 자리를 바꿔요.</b> 블록을 옆으로 밀거나, 블록 두 개를 차례로 탭하면 됩니다. 같은 행성이 <b>한 줄로 3개 이상</b> 맞아야 바뀌고, 안 맞으면 제자리로 돌아와요(이때는 시간이 흐르지 않아요). 빈칸으로 옮기는 것도 됩니다.</li>
+    <li><b>옮길 수 있는 블록이 하나도 없으면</b> 자동으로 다시 섞어줍니다.</li>
     <li><b>평소엔 무중력.</b> 터져도 나머지 블록은 그 자리에 떠 있습니다. 새 블록도 생기지 않아요.</li>
     <li><b>★ 중력 파도</b> — 궤도를 도는 <b>행성을 손가락으로 끌어 다른 변으로 옮기면</b> 중력이 바뀌고, 모든 블록이 그쪽으로 쏟아집니다. 파도 중에는 줄이 아니어도 <b>같은 행성 3개 이상이 붙어 뭉치면</b> 터지고, <b>연쇄마다 점수 ×2, ×3, ×4… 그리고 +2초.</b> 빈칸을 만들어 판을 짜둔 뒤 한 번에 쏟는 게 핵심이에요.</li>
     <li>중력 조종은 스테이지마다 ◆◆ 2번. 파도 3연쇄 이상이면 ◆ 하나를 돌려받습니다(스테이지당 1번). 행성이 돌다가 저절로 중력이 바뀌기도 해요.</li>
     <li>변마다 적힌 숫자가 그쪽 행성들의 힘이고, <b>가장 큰 변</b>이 중력 방향입니다. 큰 행성일수록 힘이 세요.</li>
     <li>제한 시간(1판 ${START_TIME}초, 판마다 3초씩 줄어 최소 36초) 안에 전부 없애면 다음 스테이지, 못 없애면 <b>실패</b>. 한 행성이 2개만 남으면 2개만 붙여도 터지고, 1개만 남으면 스스로 사라져요.</li>
-    <li><b>4개</b> = 2배 +2초 · <b>ㄱ/ㅗ 모양</b> = 3배 +3초 · <b>5개</b> = 초신성(같은 행성 전부 소멸) +4초.</li>
+    <li><b>아이템 블록</b> — <b>4개</b>를 맞추면 그 줄(가로/세로)을 통째로 지우는 <b>혜성 블록</b>, <b>5개 이상이나 ㄱ/ㅗ 모양</b>이면 같은 행성을 전부 없애는 <b>초신성 블록</b>이 그 자리에 생겨요. 옆 칸과 바꾸거나, 매치에 넣거나, 두 번 탭하면 터집니다. 초신성은 바꾼 상대 행성을 전부 없애요.</li>
     <li><b>블랙홀</b> — 끌 수도 지나갈 수도 없는 벽. 중력 방향에서 바로 옆에 붙은 블록을 삼키고 <b>−2초</b>.</li>
     <li><b>외계행성</b> — 0이 되면 폭발 <b>−8초</b>. 바로 옆에서 매치를 터뜨리면 해체 +2초.</li>
     <li><b>혜성</b> — 스테이지마다 한 번 저절로 날아와 한 줄을 쓸어줍니다. ☄ 버튼은 한 판에 최대 ${COMET_MAX}번: 첫 번째 무료, 그다음부터 ✦${COMET_COST}.</li>
@@ -988,6 +1075,8 @@ $('btnComet').onclick = async () => {
 };
 $('modal').addEventListener('click', e => { if (e.target === $('modal') && G.state === 'home') closeModal(); });
 
+window.addEventListener('unhandledrejection', e => { console.warn('[cosmo] 진행 중 오류', e.reason); if (G.state === 'play') { G.busy = false; G.swapping = false; G.trig = []; } });
+
 // ───────────────────────── 시작 ─────────────────────────
 let last = 0;
 function frame(ts) {
@@ -1008,6 +1097,6 @@ async function boot() {
   } else maybeDaily();
   setInterval(refreshMeta, 60000);        // 자정이 지나면 무료 횟수 표시 갱신
 }
-window.__cp = { G, S: () => S, W, freeLeft, dev, PLANETS, planetGrab, planetRelease, trackU, findHintMove, findGroups, typeCounts, dragStart, dragTo, dragEnd, startGame, buildStage, L };
+window.__cp = { G, S: () => S, W, freeLeft, dev, PLANETS, planetGrab, planetRelease, trackU, findMove, findGroups, typeCounts, trySwap, useItem, shuffleBoard, mk, startGame, buildStage, L };
 boot();
 })();
