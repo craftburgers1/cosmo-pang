@@ -33,7 +33,7 @@ const PLANETS = [
 ];
 const W_SUM = PLANETS.reduce((a, p) => a + p.w, 0);
 const ORBIT_BASE = 30;            // 수성이 보드를 한 바퀴 도는 시간(초). 나머지는 실제 주기의 제곱근 비율로 느려짐
-PLANETS.forEach(p => { p.sec = ORBIT_BASE * Math.sqrt(p.T / 87.97); });
+PLANETS.forEach((p, i) => { p.sec = ORBIT_BASE * Math.sqrt(p.T / 87.97); p.zs = 1.15 - i * 0.14; p.spin = 0; });      // zs = 무중력 중 화면상 공전 속도(바퀴/초)
 const ALIGN_RATIO = 0.6;          // 한쪽에 전체 힘의 60% 이상 모이면 행성 정렬
 const DIRS = { down: [0, 1, '▼'], up: [0, -1, '▲'], left: [-1, 0, '◀'], right: [1, 0, '▶'] };
 const CALLS = [[3, '좋아요!'], [5, '멋져요!'], [8, '대단해!'], [11, '환상적!!'], [14, '우주급!!'], [18, '초신성!!!'], [23, '빅뱅!!!!']];
@@ -142,6 +142,7 @@ const Snd = (() => {
     over() { [9, 7, 5, 2, 0].forEach((n, i) => tone(note(n), i * 0.13, 0.5, 'triangle', 0.14)); },
     grav() { noise(0, 0.6, 200, 1400, 0.12, 1.2); tone(90, 0, 0.5, 'sine', 0.16, 180); },
     zero() { for (let i = 0; i < 9; i++) tone(note(i * 2 % 15), i * 0.07, 0.6, 'sine', 0.09); noise(0, 1.1, 300, 6000, 0.1, 2); tone(110, 0, 1.0, 'sine', 0.14, 440); },
+    zeroTick(last) { if (last) { tone(880, 0, 0.12, 'square', 0.05); tone(660, 0.12, 0.12, 'square', 0.05); } else { const i = 6 + irnd(8); tone(note(i), 0, 0.5, 'sine', 0.05); tone(note(i) * 1.5, 0.1, 0.5, 'sine', 0.035); } },
     zeroEnd() { tone(520, 0, 0.5, 'sine', 0.13, 130); noise(0, 0.4, 3000, 300, 0.08, 1.5); },
   };
 })();
@@ -167,7 +168,7 @@ function glow(col) {
 // ───────────────────────── 게임 상태 ─────────────────────────
 const G = {
   state: 'home', grid: [], busy: false, stage: 1, cleared: 0, score: 0, shown: 0, combo: 0, comboT: 0, comboMax: 2.6, maxCombo: 0,
-  time: START_TIME, fever: 0, feverT: 0, drag: null, sel: null, trig: [], swapping: false, moveVer: -1, zeroT: 0, zeroMax: ZERO_SEC, zeroRun: 0, zeroStage: 0, stageT: 0, float: null, idle: 0, hint: null, left: 0, ver: 0,
+  time: START_TIME, fever: 0, feverT: 0, drag: null, sel: null, trig: [], swapping: false, moveVer: -1, zk: 0, zeroFx: 0, zeroT: 0, zeroMax: ZERO_SEC, zeroRun: 0, zeroStage: 0, stageT: 0, float: null, idle: 0, hint: null, left: 0, ver: 0,
   grav: 'down', gravLock: 0, gravDirty: false, slosh: 0, align: false, side: { up: 0, right: 0, down: 0, left: 0 },
   orbitDays: 0, cometT: 15, cometQ: false, shake: 0, flash: 0, mascotJump: 0, lastTick: 0, earned: 0,
   dying: [], parts: [], rings: [], beams: [], texts: [], comets: [], callout: null,
@@ -418,10 +419,15 @@ function startZero(sec = ZERO_SEC, test = false) {
   if (!test) { G.zeroStage++; G.zeroRun++; }
   G.zeroT = G.zeroMax = sec; G.sel = null; G.hint = null; G.float = null;
   callout('무중력 타임! ZERO-G', '#7df9ff'); Snd.zero(); G.flash = 0.45; G.mascotJump = 1; buzz(50);
-  for (let i = 0; i < 40; i++) burst(rnd(L.bx, L.bx + L.bw), rnd(L.by, L.by + L.bh), '#7df9ff', 1);
+  for (let i = 0; i < 60; i++) burst(rnd(L.bx, L.bx + L.bw), rnd(L.by, L.by + L.bh), ['#7df9ff', '#ffffff', '#ff8af0', '#b6a0ff'][i % 4], 1);
+  for (let i = 0; i < 4; i++) G.rings.push({ x: L.bx + L.bw / 2, y: L.by + L.bh / 2, t: -i * 0.12, max: L.bw * (0.6 + i * 0.2), col: i % 2 ? '#ff8af0' : '#7df9ff' });
+  G.shake = Math.max(G.shake, 8); G.zeroFx = 0;
   return true;
 }
-function endZero() { G.zeroT = 0; G.float = null; G.sel = null; G.moveVer = -1; callout('중력 복귀', '#b9a8ff'); Snd.zeroEnd(); }
+function endZero() {
+  G.zeroT = 0; G.float = null; G.sel = null; G.moveVer = -1; callout('중력 복귀', '#b9a8ff'); Snd.zeroEnd(); G.flash = 0.3; G.shake = Math.max(G.shake, 6);
+  for (let i = 0; i < 3; i++) G.rings.push({ x: L.bx + L.bw / 2, y: L.by + L.bh / 2, t: -i * 0.1, max: L.bw * 0.75, col: '#b9a8ff' });
+}
 // 무중력 타임 중 이동: 거리 제한 없음, 매치가 아니어도 그대로 둠 (블랙홀 칸만 불가)
 async function zeroMove(r1, c1, r2, c2) {
   if (G.state !== 'play' || G.busy || G.zeroT <= 0) return false;
@@ -660,8 +666,14 @@ function updateGravity(dt, force) {
   for (const p of PLANETS) {
     p.uNat = ((((p.L0 + 360 * G.orbitDays / p.T) / 360 + G.orbitT / p.sec + (p.off || 0)) % 1) + 1) % 1;
     p.u = G.pdrag && G.pdrag.p === p ? G.pdrag.u : p.uNat;
-    [p.x, p.y, p.side] = trackPoint(p.u); side[p.side] += p.w;
+    p.side = trackPoint(p.u)[2]; side[p.side] += p.w;
+    // 무중력 연출: 안쪽 행성일수록 빠르게 돈다. 끝나면 가장 가까운 한 바퀴 지점으로 감속해 제자리에 선다
+    if (G.zeroT > 0 && G.state === 'play') p.spin = (p.spin || 0) + dt * p.zs;
+    else if (p.spin) { const tgt = Math.ceil(p.spin - 0.02); p.spin += (tgt - p.spin) * Math.min(1, dt * 6) + Math.min(tgt - p.spin, dt * 0.25); if (tgt - p.spin < 0.002) p.spin = 0; }
+    p.ud = G.pdrag && G.pdrag.p === p ? p.u : (((p.u + (p.spin || 0)) % 1) + 1) % 1;
+    [p.x, p.y] = trackPoint(p.ud);
   }
+  G.zk += ((G.zeroT > 0 ? 1 : 0) - G.zk) * Math.min(1, dt * 5);      // 무중력 연출 세기 0~1 (부드럽게 켜지고 꺼짐)
   let best = G.grav; for (const d in side) if (side[d] > side[best]) best = d;
   G.previewBest = best;
   const was = G.align; G.align = side[best] >= W_SUM * ALIGN_RATIO;
@@ -689,7 +701,7 @@ function update(dt) {
   for (const d of G.dying) { stepPiece(d.p, dt); d.t += dt; }
   G.dying = G.dying.filter(d => d.t < 0.2);
   const [gx, gy] = DIRS[G.grav];
-  for (const p of G.parts) { p.life += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx = p.vx * 0.94 + gx * 420 * dt; p.vy = p.vy * 0.94 + gy * 420 * dt; }
+  for (const p of G.parts) { p.life += dt; p.x += p.vx * dt; p.y += p.vy * dt; const gq = 1 - G.zk; p.vx = p.vx * 0.94 + gx * 420 * dt * gq; p.vy = p.vy * 0.94 + gy * 420 * dt * gq - 90 * dt * G.zk; }
   G.parts = G.parts.filter(p => p.life < p.max);
   G.rings = G.rings.filter(r => (r.t += dt) < 0.5); G.beams = G.beams.filter(b => (b.t += dt) < 0.32);
   G.texts = G.texts.filter(t => (t.t += dt) < 0.9); G.comets = G.comets.filter(c => (c.t += dt) < 0.7);
@@ -702,6 +714,10 @@ function update(dt) {
   if (!G.swapping) G.time -= dt;          // 교환이 유효한지 판정하고 되돌리는 동안에는 시간이 흐르지 않음
   G.left = remaining(); G.stageT += dt;
   if (G.zeroT > 0 && (G.zeroT -= dt) <= 0) endZero();
+  if (G.zeroT > 0 && (G.zeroFx -= dt) <= 0) {        // 무중력 중: 1.1초마다 파동 고리 + 반짝이는 소리 + 흩날리는 빛가루
+    G.zeroFx = 1.1; G.rings.push({ x: L.bx + L.bw / 2, y: L.by + L.bh / 2, t: 0, max: L.bw * 0.95, col: G.zeroT < 2 ? '#ff7a7a' : '#7df9ff' }); Snd.zeroTick(G.zeroT < 2);
+    for (let i = 0; i < 10; i++) burst(rnd(L.bx, L.bx + L.bw), rnd(L.by, L.by + L.bh), i % 2 ? '#ff8af0' : '#7df9ff', 1);
+  }
   if (G.feverT > 0) { G.feverT -= dt; G.fever = Math.max(0, G.feverT / 8 * 100); }
   let act = null;
   G.grid.forEach((row, r) => row.forEach((p, c) => {
@@ -753,25 +769,30 @@ function draw() {
   ctx.globalAlpha = 1;
   if (G.state === 'home') return;
   if (G.feverT > 0) { ctx.fillStyle = `hsla(${(T * 120) % 360},90%,60%,0.10)`; ctx.fillRect(0, 0, L.W, L.H); }
-  if (G.zeroT > 0) { ctx.fillStyle = `rgba(60,220,255,${0.10 + 0.04 * Math.sin(T * 5)})`; ctx.fillRect(0, 0, L.W, L.H); }
+  if (G.zk > 0.01) drawZeroBack();
   drawStrip();
   ctx.save();
   if (G.shake > 0.3) ctx.translate(rnd(-1, 1) * G.shake, rnd(-1, 1) * G.shake);
   drawBoard();
   ctx.restore();
   drawOrbit();
+  if (G.zk > 0.01) drawZeroFront();
   drawFx();
 }
 function drawStrip() {
   const y = L.sy, im = IMG.mascot;
   if (im && im.width) {
     const s = 62, j = Math.sin(G.mascotJump * Math.PI) * 12;
-    ctx.save(); ctx.translate(L.W * 0.14, y + Math.sin(T * 1.7) * 3 - j); ctx.rotate(Math.sin(T * 1.1) * 0.06 + G.mascotJump * 0.25); ctx.drawImage(im, -s / 2, -s / 2, s, s); ctx.restore();
+    ctx.save(); ctx.translate(L.W * 0.14, y + Math.sin(T * 1.7) * 3 - j); ctx.rotate(Math.sin(T * 1.1) * 0.06 + G.mascotJump * 0.25 + (G.zk > 0.01 ? T * 2.2 * G.zk : 0)); ctx.drawImage(im, -s / 2, -s / 2, s, s); ctx.restore();
   }
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   if (G.zeroT > 0) {             // 무중력 타임 배너 + 남은 시간 게이지
     const w = Math.min(L.W * 0.56, 230), k = Math.max(0, G.zeroT / G.zeroMax), x0 = L.W / 2 - w / 2;
-    ctx.font = '900 17px sans-serif'; ctx.fillStyle = '#7df9ff'; ctx.shadowColor = '#00d5ff'; ctx.shadowBlur = 12; ctx.fillText('무중력 타임! ZERO-G', L.W / 2, y - 12); ctx.shadowBlur = 0;
+    const bg = ctx.createLinearGradient(L.W / 2 - 110, 0, L.W / 2 + 110, 0), hh = (T * 140) % 360;
+    bg.addColorStop(0, `hsl(${hh},100%,72%)`); bg.addColorStop(0.5, '#ffffff'); bg.addColorStop(1, `hsl(${(hh + 140) % 360},100%,72%)`);
+    ctx.save(); ctx.translate(L.W / 2, y - 12); ctx.scale(1 + 0.06 * Math.sin(T * 7), 1 + 0.06 * Math.sin(T * 7));
+    ctx.font = '900 19px sans-serif'; ctx.lineWidth = 5; ctx.lineJoin = 'round'; ctx.strokeStyle = 'rgba(6,20,50,0.9)'; ctx.strokeText('무중력 타임! ZERO-G', 0, 0);
+    ctx.shadowColor = '#00d5ff'; ctx.shadowBlur = 16; ctx.fillStyle = bg; ctx.fillText('무중력 타임! ZERO-G', 0, 0); ctx.restore();
     rr(x0, y + 4, w, 12, 6); ctx.fillStyle = 'rgba(10,6,34,0.8)'; ctx.fill(); ctx.strokeStyle = 'rgba(125,249,255,0.7)'; ctx.lineWidth = 1; ctx.stroke();
     if (k > 0.02) { rr(x0 + 2, y + 6, (w - 4) * k, 8, 4); ctx.fillStyle = G.zeroT < 2 ? '#ff7a7a' : '#7df9ff'; ctx.fill(); }
     ctx.font = '800 11px sans-serif'; ctx.fillStyle = '#fff'; ctx.fillText(`${Math.ceil(G.zeroT)}초 · 아무 칸으로나 옮기세요`, L.W / 2, y + 26);
@@ -790,11 +811,59 @@ function drawStrip() {
     ctx.font = '800 8px sans-serif'; ctx.fillStyle = '#ffd23a'; ctx.fillText('COMBO', x, y + 13);
   }
 }
+// ── 무중력 타임 화면 연출 (G.zk = 세기 0~1)
+function drawZeroBack() {
+  const z = G.zk, cx = L.bx + L.bw / 2, cy = L.by + L.bh / 2, R = Math.hypot(L.W, L.H) * 0.62, warn = G.zeroT > 0 && G.zeroT < 2;
+  // 화면 전체 색: 깊은 청보라 + 가장자리 오로라
+  ctx.fillStyle = `rgba(${warn ? '255,90,120' : '40,200,255'},${(0.13 + 0.05 * Math.sin(T * (warn ? 16 : 5))) * z})`; ctx.fillRect(0, 0, L.W, L.H);
+  const vg = ctx.createRadialGradient(cx, cy, L.bw * 0.45, cx, cy, R);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(0.7, `hsla(${(T * 60) % 360},95%,62%,${0.20 * z})`); vg.addColorStop(1, `hsla(${(T * 60 + 90) % 360},95%,60%,${0.42 * z})`);
+  ctx.fillStyle = vg; ctx.fillRect(0, 0, L.W, L.H);
+  // 워프: 별빛이 중심에서 바깥으로 빠르게 흘러감
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+  for (let i = 0; i < 46; i++) {
+    const a = i * 2.39996 + Math.sin(i) * 0.4, k = (T * (0.45 + (i % 7) * 0.09) + i * 0.173) % 1, r0 = L.bw * 0.5 + k * k * R, len = 10 + k * 46;
+    ctx.strokeStyle = `hsla(${(i * 37 + T * 80) % 360},100%,${78 + (i % 3) * 8}%,${(0.15 + 0.75 * k) * z})`; ctx.lineWidth = 1 + k * 1.8;
+    ctx.beginPath(); ctx.moveTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0); ctx.lineTo(cx + Math.cos(a) * (r0 + len), cy + Math.sin(a) * (r0 + len)); ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawZeroFront() {
+  const z = G.zk, { bx, by, bw, bh, cs } = L, pad = 5, cx = bx + bw / 2, cy = by + bh / 2;
+  ctx.save();
+  // 보드 둘레를 도는 무지개 네온 테두리 (두 겹)
+  for (let k = 0; k < 2; k++) {
+    const g = ctx.createLinearGradient(bx + bw * (0.5 + 0.5 * Math.cos(T * 2 + k * 3.14)), by + bh * (0.5 + 0.5 * Math.sin(T * 2 + k * 3.14)), bx + bw * (0.5 - 0.5 * Math.cos(T * 2 + k * 3.14)), by + bh * (0.5 - 0.5 * Math.sin(T * 2 + k * 3.14)));
+    g.addColorStop(0, '#7df9ff'); g.addColorStop(0.35, '#b6a0ff'); g.addColorStop(0.65, '#ff8af0'); g.addColorStop(1, '#fff7a8');
+    ctx.globalAlpha = (k ? 0.35 : 0.95) * z; ctx.strokeStyle = g; ctx.lineWidth = k ? 10 : 3.5;
+    rr(bx - pad - k * 2, by - pad - k * 2, bw + (pad + k * 2) * 2, bh + (pad + k * 2) * 2, 16 + k * 2); ctx.stroke();
+  }
+  // 보드 안: 위로 떠오르는 빛가루
+  rr(bx - pad, by - pad, bw + pad * 2, bh + pad * 2, 16); ctx.clip(); ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 34; i++) {
+    const sp = 0.10 + (i % 6) * 0.035, k = (i * 0.2713 + T * sp) % 1, x = bx + ((i * 0.6180339) % 1) * bw + Math.sin(T * 1.3 + i) * 9, y = by + bh * (1 - k);
+    drawGlow(x, y, 7 + (i % 4) * 5, ['#7df9ff', '#ffffff', '#ff8af0', '#b6a0ff'][i % 4], (0.35 + 0.45 * Math.sin(T * 4 + i * 1.7) ** 2) * Math.sin(k * 3.1416) * z);
+  }
+  ctx.restore();
+  // 위로 올라가는 화살표(▲)들: 아래로 당기는 힘이 없다는 표시 — 보드 양옆
+  ctx.save(); ctx.fillStyle = '#7df9ff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = '900 11px sans-serif';
+  for (let i = 0; i < 6; i++) for (const sx of [bx - L.m * 0.56, bx + bw + L.m * 0.56]) {
+    const k = (T * 0.55 + i / 6) % 1; ctx.globalAlpha = Math.sin(k * 3.1416) * 0.55 * z; ctx.fillText('▲', sx, by + bh * (1 - k));
+  }
+  ctx.restore();
+}
 // 보드 둘레 궤도 + 행성 + 변마다 끌어당기는 힘
 function drawOrbit() {
   const { tx, ty, tw, th, bx, by, bw, bh, m } = L;
   ctx.save();
-  ctx.setLineDash([3, 6]); ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(200,180,255,0.35)'; rr(tx, ty, tw, th, 14); ctx.stroke(); ctx.setLineDash([]);
+  const z = G.zk;
+  ctx.setLineDash([3, 6]); ctx.lineDashOffset = -T * 60 * z; ctx.lineWidth = 1 + z * 1.5; ctx.strokeStyle = z > 0.01 ? `rgba(125,249,255,${0.35 + 0.5 * z})` : 'rgba(200,180,255,0.35)'; rr(tx, ty, tw, th, 14); ctx.stroke(); ctx.setLineDash([]); ctx.lineDashOffset = 0;
+  if (z > 0.01) {                // 빠르게 도는 행성 뒤로 빛 꼬리
+    ctx.globalCompositeOperation = 'lighter';
+    for (const p of PLANETS) { if (G.pdrag && G.pdrag.p === p) continue; for (let k = 1; k <= 9; k++) { const [qx, qy] = trackPoint((((p.ud - k * 0.011 * p.zs) % 1) + 1) % 1); drawGlow(qx, qy, p.s * (3.6 - k * 0.3), p.c, (0.55 - k * 0.055) * z); } }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  ctx.globalAlpha = 1 - z;       // 무중력 중에는 '변의 힘' 표시가 사라짐 (끌어당기는 힘 없음)
   // 변마다 힘의 크기만큼 빛나는 띠와 숫자
   const mid = { up: [bx + bw / 2, by - 3], down: [bx + bw / 2, by + bh + 3], left: [bx - 3, by + bh / 2], right: [bx + bw + 3, by + bh / 2] };
   for (const d in G.side) {
@@ -810,9 +879,15 @@ function drawOrbit() {
       ctx.fillText((on ? DIRS[d][2] + ' ' : '') + v, x, y + 1);
     }
   }
+  ctx.globalAlpha = 1;
+  if (z > 0.3) {                 // 변마다 '0' 표시: 중력 0
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = '900 11px sans-serif';
+    for (const d in mid) { const [x, y] = mid[d]; ctx.globalAlpha = z; rr(x - 17, y - 9, 34, 18, 9); ctx.fillStyle = 'rgba(8,30,50,0.92)'; ctx.fill(); ctx.strokeStyle = '#7df9ff'; ctx.lineWidth = 1.2; ctx.stroke(); ctx.fillStyle = '#7df9ff'; ctx.fillText('0 G', x, y + 1); }
+    ctx.globalAlpha = 1;
+  }
   for (const p of PLANETS) {
-    const held = G.pdrag && G.pdrag.p === p, on = p.side === (G.pdrag ? G.previewBest : G.grav), r = p.s * (held ? 1.5 : on ? 1.12 + 0.06 * Math.sin(T * 6) : 1);
-    if (G.charges > 0 && G.state === 'play' && !G.pdrag) { ctx.strokeStyle = 'rgba(255,224,138,0.75)'; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]); ctx.lineDashOffset = -T * 14; ctx.beginPath(); ctx.arc(p.x, p.y, r + 5, 0, 6.2832); ctx.stroke(); ctx.setLineDash([]); }
+    const held = G.pdrag && G.pdrag.p === p, on = z < 0.5 && p.side === (G.pdrag ? G.previewBest : G.grav), r = p.s * (held ? 1.5 : on ? 1.12 + 0.06 * Math.sin(T * 6) : 1);
+    if (G.charges > 0 && G.state === 'play' && !G.pdrag && z < 0.5) { ctx.strokeStyle = 'rgba(255,224,138,0.75)'; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]); ctx.lineDashOffset = -T * 14; ctx.beginPath(); ctx.arc(p.x, p.y, r + 5, 0, 6.2832); ctx.stroke(); ctx.setLineDash([]); }
     ctx.globalCompositeOperation = 'lighter'; drawGlow(p.x, p.y, r * (on ? 6.5 : 4), p.c, on ? 0.75 : 0.4); ctx.globalCompositeOperation = 'source-over';
     if (on) {     // 끌어당기는 쪽 행성: 보드를 향한 인력선
       const cx = Math.max(bx, Math.min(bx + bw, p.x)), cy = Math.max(by, Math.min(by + bh, p.y)), ph = (T * 1.6) % 1;
@@ -825,15 +900,15 @@ function drawOrbit() {
     if (p.n === '토성') { ctx.strokeStyle = '#fff2c0'; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(p.x, p.y, r * 1.75, r * 0.5, -0.4, 0, 6.2832); ctx.stroke(); }
     if (p.n === '목성') { ctx.strokeStyle = 'rgba(150,80,40,0.55)'; ctx.lineWidth = 1.5; for (const o of [-0.3, 0.25]) { ctx.beginPath(); ctx.moveTo(p.x - r * 0.9, p.y + r * o); ctx.lineTo(p.x + r * 0.9, p.y + r * o); ctx.stroke(); } }
     ctx.font = '700 9px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(10,6,34,0.9)';
-    const ly = p.side === 'up' ? p.y - r - 7 : p.y + r + 7;
-    ctx.strokeText(p.n, p.x, ly); ctx.fillStyle = on ? '#fff' : '#cfc4f5'; ctx.fillText(p.n, p.x, ly);
+    const ly = p.y < L.ty + 2 ? p.y - r - 7 : p.y + r + 7;
+    ctx.globalAlpha = 1 - z * 0.85; ctx.strokeText(p.n, p.x, ly); ctx.fillStyle = on ? '#fff' : '#cfc4f5'; ctx.fillText(p.n, p.x, ly); ctx.globalAlpha = 1;
   }
   ctx.restore();
 }
 function drawBoard() {
   const { bx, by, bw, bh, cs } = L, pad = 5;
   rr(bx - pad, by - pad, bw + pad * 2, bh + pad * 2, 16); ctx.fillStyle = 'rgba(10,6,34,0.62)'; ctx.fill();
-  ctx.lineWidth = G.zeroT > 0 ? 3 : 1.5; ctx.strokeStyle = G.zeroT > 0 ? `rgba(125,249,255,${0.7 + 0.3 * Math.sin(T * 8)})` : G.feverT > 0 ? `hsl(${(T * 240) % 360},95%,65%)` : 'rgba(190,160,255,0.4)'; ctx.stroke();
+  ctx.lineWidth = 1.5; ctx.strokeStyle = G.feverT > 0 ? `hsl(${(T * 240) % 360},95%,65%)` : 'rgba(190,160,255,0.4)'; ctx.stroke();
   ctx.fillStyle = 'rgba(255,255,255,0.035)';
   for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) if ((r + c) % 2) { rr(bx + c * cs + 2, by + r * cs + 2, cs - 4, cs - 4, 9); ctx.fill(); }
   const [dx, dy] = DIRS[G.grav], gcol = G.align ? '255,214,90' : '120,225,255';
@@ -841,15 +916,23 @@ function drawBoard() {
   // 중력 쪽으로 기우는 빛 + 흘러가는 먼지
   const ex = dx > 0 ? bx + bw : dx < 0 ? bx : bx + bw / 2, ey = dy > 0 ? by + bh : dy < 0 ? by : by + bh / 2;
   const gr = ctx.createLinearGradient(ex - dx * cs * 2.2, ey - dy * cs * 2.2, ex, ey);
-  gr.addColorStop(0, `rgba(${gcol},0)`); gr.addColorStop(1, `rgba(${gcol},${0.26 + 0.1 * Math.sin(T * 4)})`);
+  const gq = 1 - G.zk;          // 무중력 중에는 중력 쪽 빛·먼지가 사라짐
+  gr.addColorStop(0, `rgba(${gcol},0)`); gr.addColorStop(1, `rgba(${gcol},${(0.26 + 0.1 * Math.sin(T * 4)) * gq})`);
   ctx.fillStyle = gr; ctx.fillRect(bx - pad, by - pad, bw + pad * 2, bh + pad * 2);
   ctx.strokeStyle = `rgba(${gcol},0.5)`; ctx.lineWidth = 1.5; ctx.lineCap = 'round';
   for (let i = 0; i < 16; i++) {
     const k = (T * (0.35 + (i % 5) * 0.07) + i * 0.137) % 1, o = ((i * 0.618) % 1);
     const x = dy ? bx + o * bw : (dx > 0 ? bx + k * bw : bx + bw - k * bw), y = dy ? (dy > 0 ? by + k * bh : by + bh - k * bh) : by + o * bh;
-    ctx.globalAlpha = 0.15 + 0.5 * k; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + dx * (6 + k * 16), y + dy * (6 + k * 16)); ctx.stroke();
+    ctx.globalAlpha = (0.15 + 0.5 * k) * gq; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + dx * (6 + k * 16), y + dy * (6 + k * 16)); ctx.stroke();
   }
   ctx.globalAlpha = 1;
+  if (G.zk > 0.01) {             // 보드 바닥에 깔리는 큰 ZERO-G 글자 + 중심에서 번지는 빛
+    const z = G.zk, cx = bx + bw / 2, cy = by + bh / 2;
+    ctx.globalCompositeOperation = 'lighter'; drawGlow(cx, cy, bw * (1.5 + 0.15 * Math.sin(T * 3)), '#3aa8ff', 0.30 * z); ctx.globalCompositeOperation = 'source-over';
+    ctx.save(); ctx.translate(cx, cy); ctx.rotate(-0.42); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = `900 ${bw * 0.26}px sans-serif`; ctx.fillStyle = `rgba(125,249,255,${(0.16 + 0.06 * Math.sin(T * 4)) * z})`; ctx.fillText('ZERO-G', 0, 0);
+    ctx.restore();
+  }
   const sl = Math.sin(G.slosh * 9) * G.slosh * cs * 0.16;
   const fl = G.float && G.float.p;
   for (const row of G.grid) for (const p of row) if (p && p !== fl) drawPiece(p, dx * sl, dy * sl);
@@ -870,6 +953,7 @@ function drawPiece(p, ox = 0, oy = 0, sc = 1, alpha = 1) {
   if (G.hint && G.hint.has(p.id)) s *= 1 + 0.1 * Math.sin(T * 10);
   if (G.sel && G.sel[0] === p.ty && G.sel[1] === p.tx) s *= 1.14;
   ctx.save(); ctx.translate(x, y); ctx.globalAlpha = alpha;
+  if (G.zk > 0.05 && !fixed) { ctx.globalCompositeOperation = 'lighter'; drawGlow(0, cs * 0.06, s * (1.25 + 0.12 * Math.sin(T * 5 + p.id)), '#7df9ff', 0.42 * G.zk * alpha); ctx.globalCompositeOperation = 'source-over'; ctx.rotate(Math.sin(T * 2.2 + p.id * 1.3) * 0.2 * G.zk); }
   if (p.kind === 'nova') {       // 초신성 블록: 무지개 구슬
     ctx.globalCompositeOperation = 'lighter';
     for (let i = 0; i < 3; i++) { const a = T * 2.4 + i * 2.094; drawGlow(Math.cos(a) * s * 0.14, Math.sin(a) * s * 0.14, s * 0.95, TYPES[(i * 2 + Math.floor(T * 2)) % NT].col, alpha * 0.9); }
