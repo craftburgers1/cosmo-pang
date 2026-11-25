@@ -8,6 +8,11 @@ const START_TIME = 60, MAX_CHARGE = 3, STAGE_BONUS_TIME = 15, PLAY_COST = 10, CO
 const FREE_PLAYS = 10;             // 하루 무료 플레이 (KST 자정 리셋)
 const COMET_MAX = 3;               // ☄ 혜성 폭탄: 한 판(게임 1회)당 최대 사용 횟수. 첫 1회 무료, 이후 1회당 COMET_COST
 const NAT_COMET_PER_STAGE = 1, CHARGE_REFUND_PER_STAGE = 1;   // 자동 지급 아이템 횟수 제한
+// 무중력 타임(ZERO-G): 그동안은 블록을 아무 칸으로나 옮길 수 있음
+const ZERO_SEC = 7;                // 지속 시간(초)
+const ZERO_PER_STAGE = 1, ZERO_PER_RUN = 4;   // 스테이지당 1번, 한 판(게임 1회)당 최대 4번
+const ZERO_COMBO = 8;              // 조건 발동: 8콤보 도달
+const ZERO_RAND_PER_SEC = 0.02, ZERO_RAND_AFTER = 12, ZERO_MIN_BLOCKS = 12;   // 랜덤 발동: 스테이지 시작 12초 뒤부터 초당 2%, 블록 12개 이상 남았을 때만
 const DAILY = [50, 60, 70, 80, 100, 120, 200];
 const TYPES = [
   { k: 'earth',   col: '#4db2ff' },
@@ -45,7 +50,7 @@ const yesterday = () => today(Date.now() - 86400e3);
 
 // ───────────────────────── 저장 ─────────────────────────
 const SAVE_KEY = 'cosmopang.v1';
-const defaults = () => ({ credits: 0, playDate: '', playsToday: 0, best: 0, bestStage: 0, maxCombo: 0, games: 0, total: 0, streak: 0, lastClaim: '', sound: true, updatedAt: 0 });
+const defaults = () => ({ credits: 0, playDate: '', playsToday: 0, postedBest: 0, best: 0, bestStage: 0, maxCombo: 0, games: 0, total: 0, streak: 0, lastClaim: '', sound: true, updatedAt: 0 });
 let S = defaults();
 const DEVICE_KEY = 'cosmopang.device';
 function dev(k, v) {       // 이 기기에만 남기는 표시 (출석 시트 자동 표시일, 로컬 크레딧 이관 여부 등)
@@ -136,6 +141,8 @@ const Snd = (() => {
     tick() { tone(1000, 0, 0.05, 'square', 0.05); },
     over() { [9, 7, 5, 2, 0].forEach((n, i) => tone(note(n), i * 0.13, 0.5, 'triangle', 0.14)); },
     grav() { noise(0, 0.6, 200, 1400, 0.12, 1.2); tone(90, 0, 0.5, 'sine', 0.16, 180); },
+    zero() { for (let i = 0; i < 9; i++) tone(note(i * 2 % 15), i * 0.07, 0.6, 'sine', 0.09); noise(0, 1.1, 300, 6000, 0.1, 2); tone(110, 0, 1.0, 'sine', 0.14, 440); },
+    zeroEnd() { tone(520, 0, 0.5, 'sine', 0.13, 130); noise(0, 0.4, 3000, 300, 0.08, 1.5); },
   };
 })();
 const buzz = ms => { try { navigator.vibrate && navigator.vibrate(ms); } catch (e) { /* 무시 */ } };
@@ -160,7 +167,7 @@ function glow(col) {
 // ───────────────────────── 게임 상태 ─────────────────────────
 const G = {
   state: 'home', grid: [], busy: false, stage: 1, cleared: 0, score: 0, shown: 0, combo: 0, comboT: 0, comboMax: 2.6, maxCombo: 0,
-  time: START_TIME, fever: 0, feverT: 0, drag: null, sel: null, trig: [], swapping: false, moveVer: -1, idle: 0, hint: null, left: 0, ver: 0,
+  time: START_TIME, fever: 0, feverT: 0, drag: null, sel: null, trig: [], swapping: false, moveVer: -1, zeroT: 0, zeroMax: ZERO_SEC, zeroRun: 0, zeroStage: 0, stageT: 0, float: null, idle: 0, hint: null, left: 0, ver: 0,
   grav: 'down', gravLock: 0, gravDirty: false, slosh: 0, align: false, side: { up: 0, right: 0, down: 0, left: 0 },
   orbitDays: 0, cometT: 15, cometQ: false, shake: 0, flash: 0, mascotJump: 0, lastTick: 0, earned: 0,
   dying: [], parts: [], rings: [], beams: [], texts: [], comets: [], callout: null,
@@ -215,7 +222,7 @@ function stageIntro() {
     const d = dy ? (dy > 0 ? ROWS - 1 - p.ty : p.ty) : (dx > 0 ? COLS - 1 - p.tx : p.tx);
     p.x -= dx * (COLS + 2); p.y -= dy * (ROWS + 2); tween(p, p.tx, p.ty, 380 + d * 45 + irnd(60), 1, true);
   });
-  G.time = G.stageTime = Math.max(36, START_TIME - (G.stage - 1) * 3); G.charges = 2; G.refundLeft = CHARGE_REFUND_PER_STAGE; G.natLeft = NAT_COMET_PER_STAGE; G.cometT = rnd(20, 30); G.hint = null; G.idle = 0; G.sel = null; G.trig = []; G.pdrag = null; G.ver++;
+  G.time = G.stageTime = Math.max(36, START_TIME - (G.stage - 1) * 3); G.charges = 2; G.refundLeft = CHARGE_REFUND_PER_STAGE; G.natLeft = NAT_COMET_PER_STAGE; G.cometT = rnd(20, 30); G.hint = null; G.idle = 0; G.sel = null; G.trig = []; G.pdrag = null; G.zeroStage = 0; G.stageT = 0; G.float = null; G.ver++;
   callout('STAGE ' + G.stage, '#3df0c8');
 }
 const remaining = () => G.grid.flat().filter(p => p && p.kind !== 'hole').length;
@@ -404,6 +411,28 @@ async function useItem(r, c) {
   if (p.kind === 'nova') { p.used = true; kill(r, c); await novaBlast(-1, c, r); } else kill(r, c);
   await resolve(false); G.busy = false;
 }
+// ── 무중력 타임(ZERO-G)
+const canZero = () => G.state === 'play' && G.zeroT <= 0 && G.zeroStage < ZERO_PER_STAGE && G.zeroRun < ZERO_PER_RUN;
+function startZero(sec = ZERO_SEC, test = false) {
+  if (G.state !== 'play') return false;
+  if (!test) { G.zeroStage++; G.zeroRun++; }
+  G.zeroT = G.zeroMax = sec; G.sel = null; G.hint = null; G.float = null;
+  callout('무중력 타임! ZERO-G', '#7df9ff'); Snd.zero(); G.flash = 0.45; G.mascotJump = 1; buzz(50);
+  for (let i = 0; i < 40; i++) burst(rnd(L.bx, L.bx + L.bw), rnd(L.by, L.by + L.bh), '#7df9ff', 1);
+  return true;
+}
+function endZero() { G.zeroT = 0; G.float = null; G.sel = null; G.moveVer = -1; callout('중력 복귀', '#b9a8ff'); Snd.zeroEnd(); }
+// 무중력 타임 중 이동: 거리 제한 없음, 매치가 아니어도 그대로 둠 (블랙홀 칸만 불가)
+async function zeroMove(r1, c1, r2, c2) {
+  if (G.state !== 'play' || G.busy || G.zeroT <= 0) return false;
+  if (r2 < 0 || r2 >= ROWS || c2 < 0 || c2 >= COLS || (r1 === r2 && c1 === c2)) return false;
+  const a = at(r1, c1), b = at(r2, c2);
+  if (!movable(a) || (b && !movable(b))) { if (a) a.squash = 1; Snd.bad(); return false; }
+  G.busy = true; G.sel = null; G.idle = 0;
+  G.grid[r1][c1] = b; G.grid[r2][c2] = a; tween(a, c2, r2, 160); if (b) tween(b, c1, r1, 160); G.ver++; Snd.swap();
+  await sleep(170); await resolve(false, [[r2, c2], [r1, c1]]);
+  G.busy = false; return true;
+}
 // ── 인접 한 칸 교환. 3개 이상 줄이 맞거나 아이템이 끼어 있을 때만 유효, 아니면 원위치
 const movable = p => p && p.kind !== 'hole';
 async function trySwap(r1, c1, r2, c2) {
@@ -534,6 +563,7 @@ async function stageClear() {
   G.stage++; buildStage(); await sleep(900);
 }
 function bumpCombo() {
+  if (G.combo + 1 === ZERO_COMBO && canZero()) setTimeout(() => { if (canZero()) startZero(); }, 350);     // 조건 발동
   G.combo++; G.comboMax = G.comboT = Math.max(1.5, 3 - G.combo * 0.05); G.maxCombo = Math.max(G.maxCombo, G.combo);
   for (let i = CALLS.length - 1; i >= 0; i--) if (G.combo === CALLS[i][0]) { callout(CALLS[i][1], TYPES[i % NT].col); G.mascotJump = 1; break; }
 }
@@ -567,14 +597,14 @@ async function startGame() {
   }
   S.games++; Store.save();
   Object.assign(G, { state: 'play', busy: true, stage: 1, cleared: 0, score: 0, shown: 0, combo: 0, comboT: 0, maxCombo: 0, fever: 0, feverT: 0,
-    drag: null, sel: null, trig: [], swapping: false, shuffles: 0, items: 0, pdrag: null, maxWave: 0, waveMult: 1, usedPlanet: false, cometQ: false, cometUsed: 0, cometPaying: false, runId, shake: 0, earned: 0, orbitDays: realOrbitDays(), gravLock: 1.5, gravDirty: false,
+    drag: null, sel: null, trig: [], swapping: false, shuffles: 0, items: 0, zeroT: 0, zeroRun: 0, zeroStage: 0, stageT: 0, float: null, pdrag: null, maxWave: 0, waveMult: 1, usedPlanet: false, cometQ: false, cometUsed: 0, cometPaying: false, runId, shake: 0, earned: 0, orbitDays: realOrbitDays(), gravLock: 1.5, gravDirty: false,
     dying: [], parts: [], rings: [], beams: [], texts: [], comets: [], callout: null });
   PLANETS.forEach(p => { p.off = 0; }); updateGravity(0, true); buildStage();
   $('home').classList.add('hidden'); $('hud').classList.remove('hidden'); closeModal(); refreshMeta();
   setTimeout(() => { if (G.state === 'play') G.busy = false; }, 900);
 }
 async function failStage(why) {
-  G.state = 'ending'; G.busy = true; G.sel = null; G.pdrag = null;
+  G.state = 'ending'; G.busy = true; G.sel = null; G.pdrag = null; G.zeroT = 0; G.float = null;
   callout('STAGE ' + G.stage + ' 실패', '#ff5252'); Snd.over(); G.shake = 10; await sleep(1500);
   const isBest = G.score > S.best;
   G.earned = Math.min(5, G.cleared);
@@ -599,7 +629,8 @@ async function failStage(why) {
     <div class="kv"><span>획득 크레딧 (클리어 1스테이지당 1, 최대 5)</span><b>${earnMsg}</b></div>
     <div class="kv"><span>오늘 남은 무료</span><b>${freeLeft()}/${FREE_PLAYS}</b></div>
     <div class="btnrow"><button class="btn" data-act="home">홈으로</button><button class="btn primary" style="font-size:16px;padding:12px;animation:none" data-act="replay">다시 하기 <em>${freeLeft() > 0 ? '무료' : '✦' + PLAY_COST}</em></button></div>
-    ${window.Cloud && Cloud.user ? '' : '<p style="font-size:11px;opacity:.7;margin-top:12px">Google 로그인하면 기록이 저장되고 크레딧이 쌓여요</p>'}`);
+    ${isBest ? postCard() : ''}
+    ${window.Cloud && Cloud.user ? '' : '<p style="font-size:11px;opacity:.7;margin-top:12px">Google 로그인하면 기록이 저장되고 랭킹에 올라가요</p>'}`);
 }
 function goHome() { G.state = 'home'; $('hud').classList.add('hidden'); $('home').classList.remove('hidden'); closeModal(); refreshMeta(); maybeDaily(); }
 
@@ -637,7 +668,7 @@ function updateGravity(dt, force) {
   if (G.align && !was && G.state === 'play' && !G.pdrag) { callout('행성 정렬 ×2', '#ffe08a'); Snd.special(); }
   G.gravLock -= dt;
   if (force) { G.grav = best; return; }
-  if (best !== G.grav && side[best] >= side[G.grav] + 0.5 && G.gravLock <= 0 && G.state === 'play' && !G.pdrag) switchGravity(best, false);
+  if (best !== G.grav && side[best] >= side[G.grav] + 0.5 && G.gravLock <= 0 && G.state === 'play' && !G.pdrag && G.zeroT <= 0) switchGravity(best, false);     // 무중력 중엔 저절로 중력이 바뀌지 않음
 }
 // ── 행성 끌기: 행성을 다른 변으로 옮겨 중력을 직접 바꾼다 (스테이지당 횟수 제한)
 function planetGrab(x, y) {
@@ -669,13 +700,14 @@ function update(dt) {
   $('hudScore').textContent = fmt(G.shown);
   if (G.state !== 'play') return;
   if (!G.swapping) G.time -= dt;          // 교환이 유효한지 판정하고 되돌리는 동안에는 시간이 흐르지 않음
-  G.left = remaining();
+  G.left = remaining(); G.stageT += dt;
+  if (G.zeroT > 0 && (G.zeroT -= dt) <= 0) endZero();
   if (G.feverT > 0) { G.feverT -= dt; G.fever = Math.max(0, G.feverT / 8 * 100); }
   let act = null;
   G.grid.forEach((row, r) => row.forEach((p, c) => {
     if (!p) return;
     if (p.kind === 'bomb' && (p.fuse -= dt) <= 0 && !act) act = () => bombExplode(r, c);
-    if (p.kind === 'hole' && (p.eat -= dt) <= 0 && !act) act = () => holeEat(r, c, p);
+    if (p.kind === 'hole' && G.zeroT <= 0 && (p.eat -= dt) <= 0 && !act) act = () => holeEat(r, c, p);     // 무중력 중엔 블랙홀도 쉼
   }));
   if (!G.busy && !G.pdrag) {
     G.comboT -= dt; if (G.comboT <= 0) G.combo = 0;
@@ -686,9 +718,10 @@ function update(dt) {
     else if (G.natLeft > 0 && (G.cometT -= dt) <= 0 && G.left > 0) cometStrike(false);
     else {
       if (G.moveVer !== G.ver) { G.moveVer = G.ver; G.move = findMove(); }
-      if (!G.move && typeCounts().some(Boolean)) { shuffleBoard(); return; }          // 유효한 수가 없으면 자동 셔플
+      if (canZero() && G.stageT > ZERO_RAND_AFTER && G.left >= ZERO_MIN_BLOCKS && Math.random() < ZERO_RAND_PER_SEC * dt) startZero();     // 랜덤 발동
+      if (G.zeroT <= 0 && !G.move && typeCounts().some(Boolean)) { shuffleBoard(); return; }          // 유효한 수가 없으면 자동 셔플 (무중력 중엔 모든 이동이 가능하므로 섞지 않음)
       G.idle += dt;
-      if (G.idle > 5 && !G.hint && G.move) G.hint = new Set(G.move.map(([r, c]) => G.grid[r][c] && G.grid[r][c].id).filter(Boolean));
+      if (G.idle > 5 && !G.hint && G.move && G.zeroT <= 0) G.hint = new Set(G.move.map(([r, c]) => G.grid[r][c] && G.grid[r][c].id).filter(Boolean));
     }
   }
   if (G.time <= 5 && G.time > 0 && Math.ceil(G.time) !== G.lastTick) { G.lastTick = Math.ceil(G.time); Snd.tick(); }
@@ -720,6 +753,7 @@ function draw() {
   ctx.globalAlpha = 1;
   if (G.state === 'home') return;
   if (G.feverT > 0) { ctx.fillStyle = `hsla(${(T * 120) % 360},90%,60%,0.10)`; ctx.fillRect(0, 0, L.W, L.H); }
+  if (G.zeroT > 0) { ctx.fillStyle = `rgba(60,220,255,${0.10 + 0.04 * Math.sin(T * 5)})`; ctx.fillRect(0, 0, L.W, L.H); }
   drawStrip();
   ctx.save();
   if (G.shake > 0.3) ctx.translate(rnd(-1, 1) * G.shake, rnd(-1, 1) * G.shake);
@@ -735,10 +769,18 @@ function drawStrip() {
     ctx.save(); ctx.translate(L.W * 0.14, y + Math.sin(T * 1.7) * 3 - j); ctx.rotate(Math.sin(T * 1.1) * 0.06 + G.mascotJump * 0.25); ctx.drawImage(im, -s / 2, -s / 2, s, s); ctx.restore();
   }
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  if (G.zeroT > 0) {             // 무중력 타임 배너 + 남은 시간 게이지
+    const w = Math.min(L.W * 0.56, 230), k = Math.max(0, G.zeroT / G.zeroMax), x0 = L.W / 2 - w / 2;
+    ctx.font = '900 17px sans-serif'; ctx.fillStyle = '#7df9ff'; ctx.shadowColor = '#00d5ff'; ctx.shadowBlur = 12; ctx.fillText('무중력 타임! ZERO-G', L.W / 2, y - 12); ctx.shadowBlur = 0;
+    rr(x0, y + 4, w, 12, 6); ctx.fillStyle = 'rgba(10,6,34,0.8)'; ctx.fill(); ctx.strokeStyle = 'rgba(125,249,255,0.7)'; ctx.lineWidth = 1; ctx.stroke();
+    if (k > 0.02) { rr(x0 + 2, y + 6, (w - 4) * k, 8, 4); ctx.fillStyle = G.zeroT < 2 ? '#ff7a7a' : '#7df9ff'; ctx.fill(); }
+    ctx.font = '800 11px sans-serif'; ctx.fillStyle = '#fff'; ctx.fillText(`${Math.ceil(G.zeroT)}초 · 아무 칸으로나 옮기세요`, L.W / 2, y + 26);
+  } else {
   ctx.font = '900 22px sans-serif'; ctx.fillStyle = '#fff'; ctx.fillText('STAGE ' + G.stage, L.W / 2, y - 9);
   ctx.font = '700 12px sans-serif'; ctx.fillStyle = '#b9a8ff'; ctx.fillText(`남은 블록 ${G.left}`, L.W / 2 - 46, y + 13);
   ctx.fillStyle = G.charges > 0 ? '#ffe08a' : '#7d72a8'; ctx.fillText('중력 조종 ' + '◆'.repeat(Math.max(0, G.charges)) + '◇'.repeat(Math.max(0, MAX_CHARGE - G.charges)), L.W / 2 + 46, y + 13);
-  if (G.stage === 1 && !G.usedPlanet && G.state === 'play' && G.time < 52) { ctx.globalAlpha = 0.6 + 0.4 * Math.sin(T * 5); ctx.fillStyle = '#ffe08a'; ctx.fillText('☝ 궤도의 행성을 끌어 옮기면 중력 파도!', L.W / 2, L.ty + L.th + 26); ctx.globalAlpha = 1; }
+  }
+  if (G.stage === 1 && !G.usedPlanet && G.state === 'play' && G.time < 52 && G.zeroT <= 0) { ctx.globalAlpha = 0.6 + 0.4 * Math.sin(T * 5); ctx.fillStyle = '#ffe08a'; ctx.fillText('☝ 궤도의 행성을 끌어 옮기면 중력 파도!', L.W / 2, L.ty + L.th + 26); ctx.globalAlpha = 1; }
   if (G.combo >= 2) {
     const x = L.W * 0.86, k = Math.max(0, G.comboT / G.comboMax), R = 24;
     ctx.lineWidth = 4.5; ctx.lineCap = 'round';
@@ -791,7 +833,7 @@ function drawOrbit() {
 function drawBoard() {
   const { bx, by, bw, bh, cs } = L, pad = 5;
   rr(bx - pad, by - pad, bw + pad * 2, bh + pad * 2, 16); ctx.fillStyle = 'rgba(10,6,34,0.62)'; ctx.fill();
-  ctx.lineWidth = 1.5; ctx.strokeStyle = G.feverT > 0 ? `hsl(${(T * 240) % 360},95%,65%)` : 'rgba(190,160,255,0.4)'; ctx.stroke();
+  ctx.lineWidth = G.zeroT > 0 ? 3 : 1.5; ctx.strokeStyle = G.zeroT > 0 ? `rgba(125,249,255,${0.7 + 0.3 * Math.sin(T * 8)})` : G.feverT > 0 ? `hsl(${(T * 240) % 360},95%,65%)` : 'rgba(190,160,255,0.4)'; ctx.stroke();
   ctx.fillStyle = 'rgba(255,255,255,0.035)';
   for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) if ((r + c) % 2) { rr(bx + c * cs + 2, by + r * cs + 2, cs - 4, cs - 4, 9); ctx.fill(); }
   const [dx, dy] = DIRS[G.grav], gcol = G.align ? '255,214,90' : '120,225,255';
@@ -809,14 +851,21 @@ function drawBoard() {
   }
   ctx.globalAlpha = 1;
   const sl = Math.sin(G.slosh * 9) * G.slosh * cs * 0.16;
-  for (const row of G.grid) for (const p of row) if (p) drawPiece(p, dx * sl, dy * sl);
+  const fl = G.float && G.float.p;
+  for (const row of G.grid) for (const p of row) if (p && p !== fl) drawPiece(p, dx * sl, dy * sl);
   for (const d of G.dying) { const k = Math.max(0, d.t) / 0.2; drawPiece(d.p, 0, 0, d.p.gone ? 1 - k * 0.8 : 1 + k * 0.5, d.p.gone ? 1 - k * 0.5 : 1 - k); }
+  if (fl) {                      // 무중력 중 손가락으로 들고 있는 블록
+    const f = G.float; ctx.fillStyle = 'rgba(125,249,255,0.16)'; rr(bx + f.c * cs + 3, by + f.r * cs + 3, cs - 6, cs - 6, 10); ctx.fill();
+    ctx.globalCompositeOperation = 'lighter'; drawGlow(f.x, f.y, cs * 2, '#7df9ff', 0.6); ctx.globalCompositeOperation = 'source-over';
+    drawPiece(fl, f.x - (bx + (fl.x + 0.5) * cs), f.y - cs * 0.2 - (by + (fl.y + 0.5) * cs), 1.25);
+  }
   ctx.restore();
   if (G.sel) { const [r, c] = G.sel; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5; ctx.setLineDash([6, 5]); ctx.lineDashOffset = -T * 30; rr(bx + c * cs + 2, by + r * cs + 2, cs - 4, cs - 4, 11); ctx.stroke(); ctx.setLineDash([]); }
 }
 function drawPiece(p, ox = 0, oy = 0, sc = 1, alpha = 1) {
   const cs = L.cs, fixed = p.kind === 'hole';
-  const x = L.bx + (p.x + 0.5) * cs + (fixed ? 0 : ox + Math.sin(T * 1.3 + p.id * 2.1) * cs * 0.022), y = L.by + (p.y + 0.5) * cs + (fixed ? 0 : oy + Math.cos(T * 1.6 + p.id) * cs * 0.028);
+  const zg = G.zeroT > 0 ? 3.2 : 1;      // 무중력 중엔 블록이 더 크게 둥둥 뜸
+  const x = L.bx + (p.x + 0.5) * cs + (fixed ? 0 : ox + Math.sin(T * 1.3 * (zg > 1 ? 1.6 : 1) + p.id * 2.1) * cs * 0.022 * zg), y = L.by + (p.y + 0.5) * cs + (fixed ? 0 : oy + Math.cos(T * 1.6 * (zg > 1 ? 1.6 : 1) + p.id) * cs * 0.028 * zg - (zg > 1 ? cs * 0.04 : 0));
   let s = cs * 0.92 * sc * (1 + Math.sin(p.squash * Math.PI) * 0.14);
   if (G.hint && G.hint.has(p.id)) s *= 1 + 0.1 * Math.sin(T * 10);
   if (G.sel && G.sel[0] === p.ty && G.sel[1] === p.tx) s *= 1.14;
@@ -903,7 +952,12 @@ cv.addEventListener('pointermove', e => {
   if (G.pdrag) { const [, , x, y] = pointerCell(e); G.pdrag.u = trackU(x, y); return; }
   if (!press || e.pointerId !== press.id) return;
   const b = cv.getBoundingClientRect(), dx = e.clientX - b.left - press.x, dy = e.clientY - b.top - press.y;
+  if (G.float) { G.float.x = Math.max(L.bx, Math.min(L.bx + L.bw, press.x + dx)); G.float.y = Math.max(L.by, Math.min(L.by + L.bh, press.y + dy)); return; }
   if (Math.max(Math.abs(dx), Math.abs(dy)) < Math.max(14, L.cs * 0.34)) return;      // 손떨림은 무시
+  if (G.zeroT > 0) {             // 무중력: 블록을 들고 원하는 칸까지 끌어다 놓기
+    const pc = at(press.r, press.c); if (!G.busy && movable(pc)) { G.float = { p: pc, r: press.r, c: press.c, x: press.x + dx, y: press.y + dy }; G.sel = null; }
+    return;
+  }
   const p = press; press = null; G.sel = null;
   if (!movable(at(p.r, p.c))) return;
   const horiz = Math.abs(dx) > Math.abs(dy);
@@ -913,17 +967,22 @@ function tapCell(r, c) {
   if (G.busy) return;
   const p = at(r, c), s = G.sel;
   if (s && s[0] === r && s[1] === c) { G.sel = null; if (p && (p.item || p.kind === 'nova')) useItem(r, c); return; }   // 같은 칸 다시 탭: 아이템이면 사용, 아니면 선택 해제
+  if (s && G.zeroT > 0) { G.sel = null; zeroMove(s[0], s[1], r, c); return; }                                                // 무중력: 어느 칸이든 탭하면 그리로 이동
   if (s && Math.abs(s[0] - r) + Math.abs(s[1] - c) === 1) { G.sel = null; trySwap(s[0], s[1], r, c); return; }           // 옆 칸 탭: 교환
   G.sel = movable(p) ? [r, c] : null; if (G.sel) Snd.swap();
 }
-window.addEventListener('pointerup', e => { planetRelease(); if (press && e.pointerId === press.id) { const p = press; press = null; if (G.state === 'play') tapCell(p.r, p.c); } });
-window.addEventListener('pointercancel', () => { planetRelease(); press = null; });
+window.addEventListener('pointerup', e => {
+  planetRelease();
+  if (G.float) { const f = G.float; G.float = null; press = null; if (G.state === 'play') zeroMove(f.r, f.c, Math.floor((f.y - L.by - 0.01) / L.cs), Math.floor((f.x - L.bx - 0.01) / L.cs)); return; }
+  if (press && e.pointerId === press.id) { const p = press; press = null; if (G.state === 'play') tapCell(p.r, p.c); }
+});
+window.addEventListener('pointercancel', () => { planetRelease(); press = null; G.float = null; });
 
 // ───────────────────────── 메타 UI ─────────────────────────
 let toastTimer = 0;
 function toast(s, ms = 2400) { const t = $('toast'); t.textContent = s; t.classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add('hidden'), ms); }
 function openModal(html) { sheetName = ''; $('sheet').innerHTML = html; $('modal').classList.remove('hidden'); }
-function closeModal() { $('modal').classList.add('hidden'); }
+function closeModal() { sheetName = ''; $('modal').classList.add('hidden'); }
 function refreshMeta() {
   const u0 = signedIn();
   $('homeCredits').textContent = $('hudCredits').textContent = !u0 ? '게스트' : W.bal !== null ? fmt(W.bal) : W.err ? '연결 실패' : '…';
@@ -934,6 +993,7 @@ function refreshMeta() {
   $('homeBest').textContent = fmt(S.best); $('homeCombo').textContent = S.bestStage || 0;
   $('homeLevel').textContent = 'Lv.' + (Math.floor(Math.sqrt(S.total / 50000)) + 1);
   $('dailyDot').classList.toggle('hidden', S.lastClaim === today());
+  $('clanDot').classList.toggle('hidden', !Com.badge);
   $('btnSound').style.opacity = S.sound ? 1 : 0.4;
   const u = window.Cloud && Cloud.user;
   $('loginLabel').textContent = u ? u.name : 'Google 계정으로 로그인';
@@ -984,6 +1044,7 @@ function showHelp() {
   openModal(`<h2>게임 방법</h2><div class="help"><ul>
     <li><b>옆 칸과 자리를 바꿔요.</b> 블록을 옆으로 밀거나, 블록 두 개를 차례로 탭하면 됩니다. 같은 행성이 <b>한 줄로 3개 이상</b> 맞아야 바뀌고, 안 맞으면 제자리로 돌아와요(이때는 시간이 흐르지 않아요). 빈칸으로 옮기는 것도 됩니다.</li>
     <li><b>옮길 수 있는 블록이 하나도 없으면</b> 자동으로 다시 섞어줍니다.</li>
+    <li><b>무중력 타임! ZERO-G</b> — 갑자기(또는 ${ZERO_COMBO}콤보를 내면) ${ZERO_SEC}초 동안 블록을 <b>아무 칸으로나</b> 옮길 수 있어요. 끌어다 놓거나, 블록을 탭하고 옮길 칸을 탭하세요. 줄이 안 맞아도 그대로 놓입니다.</li>
     <li><b>평소엔 무중력.</b> 터져도 나머지 블록은 그 자리에 떠 있습니다. 새 블록도 생기지 않아요.</li>
     <li><b>★ 중력 파도</b> — 궤도를 도는 <b>행성을 손가락으로 끌어 다른 변으로 옮기면</b> 중력이 바뀌고, 모든 블록이 그쪽으로 쏟아집니다. 파도 중에는 줄이 아니어도 <b>같은 행성 3개 이상이 붙어 뭉치면</b> 터지고, <b>연쇄마다 점수 ×2, ×3, ×4… 그리고 +2초.</b> 빈칸을 만들어 판을 짜둔 뒤 한 번에 쏟는 게 핵심이에요.</li>
     <li>중력 조종은 스테이지마다 ◆◆ 2번. 파도 3연쇄 이상이면 ◆ 하나를 돌려받습니다(스테이지당 1번). 행성이 돌다가 저절로 중력이 바뀌기도 해요.</li>
@@ -996,19 +1057,18 @@ function showHelp() {
     <li><b>하루 무료 ${FREE_PLAYS}판</b>(한국시간 자정 리셋). 다 쓰면 로그인한 계정의 크레딧 ✦${PLAY_COST}으로 계속할 수 있어요. 크레딧은 출석 보상, 스테이지 클리어(1스테이지당 ✦1, 최대 5), 가계부·근태 앱 활동으로 같은 지갑에 쌓입니다.</li></ul></div>
     <button class="btn" data-act="close" style="width:100%">확인</button>`);
 }
-function showRank() {
+function myRecordHtml() {
   const u = window.Cloud && Cloud.user, d = deviceRecord();
-  openModal(`<h2>내 기록</h2>
-    <p>${u ? `${u.name}님 계정에 저장된 기록이에요` : '로그인하면 기록이 계정에 저장되어 다른 기기에서도 이어집니다'}</p>
+  return `<p>${u ? `${esc(u.name)}님 계정에 저장된 기록이에요` : '로그인하면 기록이 계정에 저장되어 다른 기기에서도 이어집니다'}</p>
     <div class="kv"><span>${u ? '내 계정' : '현재'} 최고 점수</span><b>${fmt(S.best)}</b></div>
     <div class="kv"><span>${u ? '내 계정' : '현재'} 최고 스테이지</span><b>${S.bestStage || 0}</b></div>
     <div class="kv"><span>최대 콤보 · 플레이 횟수</span><b>${S.maxCombo} · ${S.games}판</b></div>
     ${u ? `<div class="kv"><span>크레딧 지갑 잔액</span><b><span class="star">✦</span> ${W.bal !== null ? fmt(W.bal) : '—'}</b></div>` : ''}
     <div class="kv"><span>오늘 남은 무료</span><b>${freeLeft()}/${FREE_PLAYS}</b></div>
     <div class="kv"><span>이 기기 최고 점수</span><b>${fmt(d.best)}</b></div>
-    <div class="kv"><span>이 기기 최고 스테이지</span><b>${d.bestStage}</b></div>
-    <button class="btn" data-act="close" style="width:100%;margin-top:14px">닫기</button>`);
+    <div class="kv"><span>이 기기 최고 스테이지</span><b>${d.bestStage}</b></div>`;
 }
+const showRank = () => openRank('me');
 const errCode = e => (e && (e.code || e.message)) || '알 수 없는 오류';
 async function login() {
   if (window.Cloud && Cloud.user) { try { await Cloud.signOut(); toast('로그아웃했어요'); } catch (e) { toast('로그아웃 실패: ' + errCode(e)); } return; }
@@ -1027,12 +1087,13 @@ window.onCloudUser = (user, cloud) => {
     S.playDate = t; S.playsToday = Math.max(a, b);
   }
   if (user) {
+    Com.at = 0; Com.gs = {}; Com.badge = false;      // 계정이 바뀌면 커뮤니티 캐시를 새로 읽음
     S.credits = 0;                          // 크레딧은 이제 지갑에만 있음
     try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); } catch (e) { /* 무시 */ }
     if (!cloud) Cloud.save(S);
     toast(Cloud.loaded ? `${user.name}님, 환영해요!` : '로그인됨 · 클라우드 불러오기 실패(콘솔 확인)');
     migrateLocalCredits(legacy);
-  } else { W.bal = null; W.err = ''; }
+  } else { W.bal = null; W.err = ''; Object.assign(Com, { at: 0, scores: {}, clans: {}, joins: {}, gifts: [], gs: {}, badge: false }); }
   refreshMeta();
   if (sheetName === 'daily' && !$('modal').classList.contains('hidden')) showDaily(); else maybeDaily();
 };
@@ -1055,9 +1116,12 @@ window.onWallet = (bal, err, note) => {
 
 document.addEventListener('click', e => {
   const act = e.target.closest('[data-act]'); if (!act) return;
-  ({ close: closeModal, home: goHome, replay: () => { goHome(); startGame(); }, claim: claimDaily, login: () => { if (sheetName !== 'daily') closeModal(); login(); } })[act.dataset.act]();
+  const fn = ({ close: closeModal, home: goHome, replay: () => { goHome(); startGame(); }, claim: claimDaily, login: () => { if (sheetName !== 'daily') closeModal(); login(); },
+    clancreate: clanCreate, clanjoin: clanJoin, clanleave: clanLeave, gift: giftSend, postscore: postScore,
+    ranktab: el => openRank(el.dataset.tab), rankfilter: el => { Rk.filter = el.dataset.f; openRank('clan'); } })[act.dataset.act];
+  if (fn) fn(act);
 });
-$('btnPlay').onclick = startGame; $('btnDaily').onclick = showDaily; $('btnHelp').onclick = showHelp; $('btnRank').onclick = showRank; $('btnLogin').onclick = login;
+$('btnPlay').onclick = startGame; $('btnDaily').onclick = showDaily; $('btnHelp').onclick = showHelp; $('btnRank').onclick = showRank; $('btnClan').onclick = openClan; $('btnLogin').onclick = login;
 $('btnSound').onclick = () => { S.sound = !S.sound; Snd.init(); Snd.mute(S.sound); Store.save(); };
 $('btnQuit').onclick = () => { if (G.state !== 'play') return; openModal(`<h2>그만할까요?</h2><p>지금 나가면 이번 판 점수는 저장되지 않아요.</p><div class="btnrow"><button class="btn" data-act="close">계속하기</button><button class="btn" data-act="home">나가기</button></div>`); };
 // ☄ 혜성 폭탄: 한 판에 최대 COMET_MAX회, 첫 1회 무료, 이후 지갑에서 COMET_COST 차감
@@ -1075,6 +1139,219 @@ $('btnComet').onclick = async () => {
 };
 $('modal').addEventListener('click', e => { if (e.target === $('modal') && G.state === 'home') closeModal(); });
 
+// ───────────────────────── 커뮤니티: 클랜 · 선물 · 랭킹 ─────────────────────────
+// 저장소는 공용 게시판 community_board 하나. 글 내용(content) 형식 — 모두 'ARCADE|cosmo|'로 시작:
+//   개인 최고기록  id cosmo_score_{uid}                    ARCADE|cosmo|score|v1|{점수}|{스테이지}
+//   클랜 생성      id cosmo_clan_{국가}_{지역}_{이름hex}     ARCADE|cosmo|clan|v1|{국가}|{지역}|{이름(URL인코딩)}
+//   클랜 가입      id cosmo_join_{uid}                     ARCADE|cosmo|join|v1|{클랜id}
+//   크레딧 선물    id cosmo_gift_{보낸uid}_{KST날짜}_{1~5}   ARCADE|cosmo|gift|v1|{받는uid}|{금액}|{클랜id}
+// 문서 id가 결정적이라 1인 1기록·1인 1클랜·지역 내 클랜명 중복 금지·하루 선물 5회가 id로 보장되고, id 규칙에 안 맞는 글은 무시한다.
+const TAG = 'ARCADE|cosmo|';
+const GIFT_AMOUNT = 3, GIFT_PER_DAY = 5, GIFT_RECV_PER_DAY = 10, GIFT_KEEP_DAYS = 14, CLAN_MAX = 30;
+// 지역 코드는 목록 순서(r0, r1, …)라서 순서를 바꾸면 안 됨. 추가는 맨 뒤에만. 'etc' = 기타
+const COUNTRIES = [
+  ['KR', '한국', ['서울', '부산', '대구', '인천', '광주', '대전', '울산', '세종', '경기', '강원', '충북', '충남', '전북', '전남', '경북', '경남', '제주']],
+  ['US', '미국', ['캘리포니아', '텍사스', '뉴욕', '플로리다', '일리노이', '워싱턴', '조지아', '뉴저지', '버지니아', '하와이', '매사추세츠', '네바다']],
+  ['JP', '일본', ['도쿄', '오사카', '가나가와', '아이치', '홋카이도', '후쿠오카', '교토', '효고', '사이타마', '지바', '오키나와']],
+  ['CN', '중국', ['베이징', '상하이', '광둥', '저장', '장쑤', '쓰촨', '산둥', '톈진', '충칭', '푸젠', '랴오닝']],
+  ['TW', '대만', ['타이베이', '신베이', '타오위안', '타이중', '타이난', '가오슝', '신주', '지룽']],
+  ['VN', '베트남', ['하노이', '호찌민', '다낭', '하이퐁', '껀터', '냐짱', '후에', '빈즈엉']],
+  ['TH', '태국', ['방콕', '치앙마이', '푸껫', '촌부리(파타야)', '논타부리', '나콘랏차시마', '콘깬', '핫야이']],
+  ['PH', '필리핀', ['마닐라', '케손시티', '세부', '다바오', '마카티', '일로일로', '바기오', '앙헬레스']],
+  ['ID', '인도네시아', ['자카르타', '수라바야', '반둥', '메단', '발리', '스마랑', '마카사르', '족자카르타']],
+  ['AU', '호주', ['뉴사우스웨일스(시드니)', '빅토리아(멜버른)', '퀸즐랜드(브리즈번)', '서호주(퍼스)', '남호주(애들레이드)', '수도준주(캔버라)', '태즈메이니아', '노던준주(다윈)']],
+  ['CA', '캐나다', ['온타리오', '브리티시컬럼비아', '퀘벡', '앨버타', '매니토바', '서스캐처원', '노바스코샤', '뉴브런즈윅']],
+  ['GB', '영국', ['런던', '맨체스터', '버밍엄', '리버풀', '리즈', '에든버러', '글래스고', '카디프', '벨파스트']],
+  ['DE', '독일', ['베를린', '바이에른(뮌헨)', '함부르크', '헤센(프랑크푸르트)', '노르트라인베스트팔렌', '바덴뷔르템베르크', '작센', '니더작센']],
+  ['FR', '프랑스', ['파리', '마르세유', '리옹', '툴루즈', '니스', '낭트', '스트라스부르', '보르도', '릴']],
+  ['BR', '브라질', ['상파울루', '리우데자네이루', '브라질리아', '벨루오리존치', '살바도르', '쿠리치바', '포르탈레자', '포르투알레그리']],
+  ['MX', '멕시코', ['멕시코시티', '과달라하라', '몬테레이', '푸에블라', '티후아나', '칸쿤', '메리다', '레온']],
+  ['ZZ', '기타', []],
+];
+const ccName = cc => (COUNTRIES.find(c => c[0] === cc) || [0, cc])[1];
+const rcName = (cc, rc) => { const c = COUNTRIES.find(x => x[0] === cc); return rc === 'etc' || !c ? '기타' : c[2][+rc.slice(1)] || '기타'; };
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+const normName = s => String(s).trim().replace(/\s+/g, ' ');
+const clanIdOf = (cc, rc, name) => `cosmo_clan_${cc}_${rc}_` + [...new TextEncoder().encode(normName(name).toLowerCase())].map(b => b.toString(16).padStart(2, '0')).join('');
+const myUid = () => signedIn() ? Cloud.user.uid : '';
+
+const Com = { at: 0, scores: {}, clans: {}, joins: {}, gifts: [], gs: {}, badge: false, busy: false };
+const Cp = { cc: 'KR', rc: 'r7' };       // 클랜 찾기 화면의 국가·지역 (기본 한국·세종)
+const Rk = { tab: 'me', filter: 'all' };
+
+async function comLoad(force) {
+  if (!signedIn()) { const e = new Error('not signed in'); e.code = 'board/not-signed-in'; throw e; }
+  if (!force && Date.now() - Com.at < 20000) return;
+  const posts = await Cloud.board.list(), scores = {}, clans = {}, joins = {}, gifts = [];
+  for (const x of posts) {
+    const f = x.content.split('|'), id = x.docId, name = String(x.author || '탐험가').slice(0, 30);
+    if (f[3] !== 'v1' || !x.uid) continue;
+    if (f[2] === 'score' && id === `cosmo_score_${x.uid}`) { const sc = Math.floor(+f[4]); if (sc >= 0 && isFinite(sc)) scores[x.uid] = { score: sc, stage: Math.floor(+f[5]) || 0, name }; }
+    else if (f[2] === 'clan') { let nm = ''; try { nm = normName(decodeURIComponent(f[6] || '')); } catch (e) { /* 깨진 이름은 무시 */ } if (nm.length >= 2 && nm.length <= 12 && id === clanIdOf(f[4], f[5], nm)) clans[id] = { id, cc: f[4], rc: f[5], name: nm, leader: x.uid }; }
+    else if (f[2] === 'join' && id === `cosmo_join_${x.uid}`) joins[x.uid] = { clanId: f[4], name };
+    else if (f[2] === 'gift') { const m = id.match(/^cosmo_gift_(.+)_(\d{4}-\d{2}-\d{2})_([1-5])$/); if (m && m[1] === x.uid) gifts.push({ id, from: x.uid, fromName: name, to: f[4], amount: +f[5], clanId: f[6], date: m[2] }); }
+  }
+  for (const u in joins) if (!clans[joins[u].clanId]) delete joins[u];
+  Object.assign(Com, { at: Date.now(), scores, clans, joins, gifts });
+}
+const myClan = () => { const j = Com.joins[myUid()]; return j ? Com.clans[j.clanId] : null; };
+const membersOf = id => Object.keys(Com.joins).filter(u => Com.joins[u].clanId === id);
+const clanScore = id => membersOf(id).reduce((a, u) => a + (Com.scores[u] ? Com.scores[u].score : 0), 0);
+const sentToday = () => Com.gs.sendDate === today() ? Com.gs.sendCount || 0 : 0;
+const closeBtn = '<button class="btn" data-act="close" style="width:100%;margin-top:10px">닫기</button>';
+const loginOnly = (title, msg) => openModal(`<h2>${title}</h2><p>${msg}</p><div class="btnrow"><button class="btn" data-act="close">닫기</button><button class="btn" data-act="login">Google 로그인</button></div>`);
+const comFail = (title, e) => openModal(`<h2>${title}</h2><p>불러오지 못했어요 (${esc(errCode(e))}).<br>게임은 그대로 할 수 있어요. 잠시 뒤 다시 시도해 주세요.</p>${closeBtn}`);
+
+// ── 클랜
+async function openClan() {
+  if (!signedIn()) { loginOnly('클랜', '같은 지역 사람들과 클랜을 만들고 크레딧을 선물하려면 로그인이 필요해요.'); return; }
+  openModal('<h2>클랜</h2><p>불러오는 중…</p>'); sheetName = 'clan';
+  try { await comLoad(true); Com.gs = await Cloud.giftState().catch(() => ({})); } catch (e) { console.warn('[cosmo] 클랜 불러오기 실패', e); comFail('클랜', e); return; }
+  Com.badge = false; refreshMeta(); renderClan(); claimGifts();
+}
+function renderClan() {
+  const clan = myClan(), me = myUid();
+  if (clan) {
+    const mem = membersOf(clan.id).sort((a, b) => (Com.scores[b] ? Com.scores[b].score : 0) - (Com.scores[a] ? Com.scores[a].score : 0)), left = GIFT_PER_DAY - sentToday();
+    const rows = mem.map(u => `<div class="${u === me ? 'me' : ''}"><span>${esc(Com.joins[u].name)}${u === clan.leader ? ' <em>리더</em>' : ''}${u === me ? ' <em>나</em>' : ''}</span><b>${fmt(Com.scores[u] ? Com.scores[u].score : 0)}</b>${u === me ? '' : `<button class="mini" data-act="gift" data-uid="${esc(u)}" ${left <= 0 ? 'disabled' : ''}>선물 ✦${GIFT_AMOUNT}</button>`}</div>`).join('');
+    openModal(`<h2>${esc(clan.name)}</h2>
+      <p>${esc(ccName(clan.cc))} · ${esc(rcName(clan.cc, clan.rc))} · 클랜원 ${mem.length}/${CLAN_MAX} · 내 역할 <b>${clan.leader === me ? '리더' : '클랜원'}</b></p>
+      <div class="kv"><span>클랜 점수 (클랜원 최고점 합)</span><b>${fmt(clanScore(clan.id))}</b></div>
+      <div class="kv"><span>오늘 보낼 수 있는 선물</span><b>${left}/${GIFT_PER_DAY} · 1회 ✦${GIFT_AMOUNT}</b></div>
+      <div class="list">${rows}</div>
+      <div class="btnrow"><button class="btn" data-act="clanleave">탈퇴</button><button class="btn" data-act="close">닫기</button></div>`);
+  } else {
+    const list = Object.values(Com.clans).filter(c => c.cc === Cp.cc && c.rc === Cp.rc).map(c => ({ c, n: membersOf(c.id).length })).sort((a, b) => b.n - a.n);
+    const country = COUNTRIES.find(c => c[0] === Cp.cc) || COUNTRIES[0];
+    const rows = list.map(({ c, n }) => `<div><span>${esc(c.name)}</span><b>${n}/${CLAN_MAX}명</b><button class="mini" data-act="clanjoin" data-id="${esc(c.id)}" ${n >= CLAN_MAX ? 'disabled' : ''}>가입</button></div>`).join('');
+    openModal(`<h2>클랜 찾기</h2><p>국가와 지역을 고르면 그 지역 클랜이 보여요.</p>
+      <div class="selrow"><select id="selCc">${COUNTRIES.map(c => `<option value="${c[0]}" ${c[0] === Cp.cc ? 'selected' : ''}>${c[1]}</option>`).join('')}</select>
+      <select id="selRc">${country[2].map((r, i) => `<option value="r${i}" ${'r' + i === Cp.rc ? 'selected' : ''}>${r}</option>`).join('')}<option value="etc" ${Cp.rc === 'etc' ? 'selected' : ''}>기타</option></select></div>
+      <div class="list">${rows || '<p class="empty">이 지역에는 아직 클랜이 없어요.<br>첫 클랜을 만들어 보세요!</p>'}</div>
+      <div class="selrow"><input id="clanName" maxlength="12" placeholder="새 클랜 이름 (2~12자)" autocomplete="off"><button class="mini wide" data-act="clancreate">만들기</button></div>
+      ${closeBtn}`);
+  }
+  sheetName = 'clan';
+}
+async function clanDo(fn, failMsg) {
+  if (Com.busy) return; Com.busy = true;
+  try { await fn(); } catch (e) { console.warn('[cosmo] 클랜 처리 실패', e); toast(`${failMsg} (${errCode(e)})`, 5000); }
+  Com.busy = false; if (sheetName === 'clan' && !$('modal').classList.contains('hidden')) renderClan();
+}
+const clanCreate = () => clanDo(async () => {
+  const name = normName(($('clanName') || {}).value || '');
+  if (name.length < 2 || name.length > 12) { toast('클랜 이름은 2~12자로 지어주세요'); return; }
+  if (name.includes('|')) { toast("이름에 '|' 문자는 쓸 수 없어요"); return; }
+  await comLoad(true);
+  if (myClan()) { toast('이미 가입한 클랜이 있어요'); return; }
+  const id = clanIdOf(Cp.cc, Cp.rc, name);
+  if (Com.clans[id]) { toast('이 지역에 같은 이름의 클랜이 이미 있어요'); return; }
+  await Cloud.board.post(id, `${TAG}clan|v1|${Cp.cc}|${Cp.rc}|${encodeURIComponent(name)}`);
+  await Cloud.board.post(`cosmo_join_${myUid()}`, `${TAG}join|v1|${id}`);
+  await comLoad(true); toast(`'${name}' 클랜을 만들었어요!`); Snd.coin();
+}, '클랜을 만들지 못했어요');
+const clanJoin = el => clanDo(async () => {
+  await comLoad(true); const c = Com.clans[el.dataset.id];
+  if (!c) { toast('없어진 클랜이에요'); return; }
+  if (myClan()) { toast('이미 가입한 클랜이 있어요'); return; }
+  if (membersOf(c.id).length >= CLAN_MAX) { toast('클랜 정원이 찼어요'); return; }
+  await Cloud.board.post(`cosmo_join_${myUid()}`, `${TAG}join|v1|${c.id}`);
+  await comLoad(true); toast(`'${c.name}' 클랜에 가입했어요!`); Snd.coin();
+}, '가입하지 못했어요');
+const clanLeave = () => clanDo(async () => {
+  const c = myClan(); if (!c) return;
+  await Cloud.board.remove(`cosmo_join_${myUid()}`);
+  if (c.leader === myUid() && membersOf(c.id).length <= 1) await Cloud.board.remove(c.id).catch(() => {});     // 혼자 남은 리더가 나가면 클랜도 정리
+  await comLoad(true); toast('클랜에서 나왔어요');
+}, '탈퇴하지 못했어요');
+
+// ── 크레딧 선물: 같은 클랜원에게 하루 5회, 1회 ✦3. 보내는 사람 지갑에서 차감 → 선물 글 등록 → 받는 사람이 접속할 때 1회만 적립
+const giftSend = el => clanDo(async () => {
+  const to = el.dataset.uid, me = myUid(), clan = myClan();
+  if (!clan || !to || to === me || !Com.joins[to] || Com.joins[to].clanId !== clan.id) { toast('같은 클랜원에게만 선물할 수 있어요'); return; }
+  Com.gs = await Cloud.giftState();
+  const n = sentToday() + 1;
+  if (n > GIFT_PER_DAY) { toast(`오늘 선물 ${GIFT_PER_DAY}회를 모두 보냈어요`); return; }
+  const id = `cosmo_gift_${me}_${today()}_${n}`;
+  try { const r = await Cloud.walletApply({ logId: `cosmo:gift_send:${id}`, amount: -GIFT_AMOUNT, reason: 'gift_send', refId: to }); W.bal = r.balance; }
+  catch (e) { if (errCode(e) === 'wallet/insufficient') toast(`크레딧이 부족해요 (잔액 ✦${fmt(e.balance || 0)}, 필요 ✦${GIFT_AMOUNT})`, 3500); else toast(`선물하지 못했어요 (${errCode(e)}) — 크레딧은 차감되지 않았어요`, 5000); return; }
+  Com.gs.sendDate = today(); Com.gs.sendCount = n;
+  try { await Cloud.board.post(id, `${TAG}gift|v1|${to}|${GIFT_AMOUNT}|${clan.id}`); }
+  catch (e) {            // 글 등록 실패: 차감한 크레딧을 돌려주고 이번 회차는 소진 처리
+    console.warn('[cosmo] 선물 글 등록 실패', e);
+    await Cloud.walletApply({ logId: `cosmo:gift_refund:${id}`, amount: GIFT_AMOUNT, reason: 'gift_refund', refId: to }).then(r => { W.bal = r.balance; }).catch(() => {});
+    await Cloud.giftSave({ sendDate: Com.gs.sendDate, sendCount: n }).catch(() => {});
+    toast(`선물을 보내지 못해 크레딧을 돌려드렸어요 (${errCode(e)})`, 5000); refreshMeta(); return;
+  }
+  await Cloud.giftSave({ sendDate: Com.gs.sendDate, sendCount: n }).catch(e => console.warn('[cosmo] 선물 횟수 저장 실패', e));
+  refreshMeta(); Snd.coin(); toast(`${Com.joins[to].name}님에게 ✦${GIFT_AMOUNT} 선물했어요 (오늘 ${n}/${GIFT_PER_DAY})`);
+}, '선물하지 못했어요');
+// 내 앞으로 온 선물을 찾아 지갑에 1회만 적립 (원장 id cosmo:gift:{글id})
+let claimingGifts = false;
+async function claimGifts() {
+  if (claimingGifts || !signedIn() || !Cloud.walletOk) return; claimingGifts = true;
+  try {
+    await comLoad(true); const me = myUid(), clan = myClan(); if (!clan) return;
+    const gs = Com.gs = await Cloud.giftState(), claimed = new Set(gs.claimed || []), since = today(Date.now() - GIFT_KEEP_DAYS * 86400e3);
+    let recv = gs.recvDate === today() ? gs.recvCount || 0 : 0, got = 0; const names = [];
+    for (const g of Com.gifts) {
+      if (g.to !== me || g.from === me || g.amount !== GIFT_AMOUNT || g.date < since || claimed.has(g.id)) continue;
+      if (g.clanId !== clan.id || !Com.joins[g.from] || Com.joins[g.from].clanId !== clan.id) continue;     // 같은 클랜원이 보낸 것만
+      if (recv >= GIFT_RECV_PER_DAY) break;                                                                  // 하루 수령 한도를 넘으면 내일 받음
+      const r = await Cloud.walletApply({ logId: `cosmo:gift:${g.id}`, amount: GIFT_AMOUNT, reason: 'gift', refId: g.from });
+      claimed.add(g.id); if (r.applied) { got++; recv++; W.bal = r.balance; if (!names.includes(g.fromName)) names.push(g.fromName); }
+    }
+    if (got || claimed.size !== (gs.claimed || []).length) await Cloud.giftSave({ claimed: [...claimed].slice(-300), recvDate: today(), recvCount: recv });
+    if (got) { Com.badge = sheetName !== 'clan'; refreshMeta(); Snd.coin(); toast(`🎁 ${names[0]}님${names.length > 1 ? ` 외 ${names.length - 1}명` : ''}에게 선물 ✦${got * GIFT_AMOUNT} 받았어요!`, 5000); }
+  } catch (e) { console.warn('[cosmo] 선물 수령 실패', e); }
+  finally { claimingGifts = false; }
+}
+window.onWalletReady = () => { claimGifts(); };
+
+// ── 랭킹: 내 기록 · 개인 랭킹 · 클랜 랭킹
+const canPostBest = () => signedIn() && S.best > 0 && S.best > (S.postedBest || 0);
+async function postScore(el) {
+  if (!signedIn() || Com.busy) return; Com.busy = true;
+  const id = `cosmo_score_${myUid()}`;
+  try {
+    await Cloud.board.remove(id).catch(() => {});       // 예전 내 기록 글 삭제 (없으면 무시)
+    await Cloud.board.post(id, `${TAG}score|v1|${Math.floor(S.best)}|${S.bestStage || 0}`);
+    S.postedBest = S.best; Store.save(); Com.at = 0; Snd.coin(); toast('랭킹에 올렸어요!');
+    if (el && el.parentNode) el.parentNode.innerHTML = '<p style="margin:0"><b>랭킹에 올렸어요 ✓</b></p>';
+  } catch (e) { console.warn('[cosmo] 랭킹 등록 실패', e); toast(`랭킹에 올리지 못했어요 (${errCode(e)})`, 5000); }
+  Com.busy = false; if (sheetName === 'rank') openRank(Rk.tab);
+}
+const postCard = () => canPostBest() ? `<div class="card"><p style="margin:0 0 8px"><b>최고 기록 ${fmt(S.best)}점</b> — 랭킹에 올릴까요?</p><button class="mini wide" data-act="postscore">랭킹에 올리기</button></div>` : '';
+async function openRank(tab) {
+  Rk.tab = tab || 'me';
+  const tabs = `<div class="tabs">${[['me', '내 기록'], ['solo', '개인 랭킹'], ['clan', '클랜 랭킹']].map(([k, n]) => `<button class="${Rk.tab === k ? 'on' : ''}" data-act="ranktab" data-tab="${k}">${n}</button>`).join('')}</div>`;
+  const show = body => { openModal(`<h2>랭킹</h2>${tabs}${body}${closeBtn}`); sheetName = 'rank'; };
+  if (Rk.tab === 'me') { show(myRecordHtml() + postCard()); return; }
+  if (!signedIn()) { show('<p class="empty">Google 로그인하면 랭킹에 올라가요</p><button class="mini wide" data-act="login">Google 로그인</button>'); return; }
+  show('<p class="empty">불러오는 중…</p>');
+  try { await comLoad(false); } catch (e) { console.warn('[cosmo] 랭킹 불러오기 실패', e); if (sheetName === 'rank') show(`<p class="empty">랭킹을 불러오지 못했어요 (${esc(errCode(e))})</p>`); return; }
+  if (sheetName !== 'rank' || $('modal').classList.contains('hidden')) return;
+  const me = myUid(), tag = u => { const j = Com.joins[u]; return j && Com.clans[j.clanId] ? ` <em>${esc(Com.clans[j.clanId].name)}</em>` : ''; };
+  if (Rk.tab === 'solo') {
+    const all = Object.keys(Com.scores).map(u => ({ u, ...Com.scores[u] })).sort((a, b) => b.score - a.score), mine = all.findIndex(x => x.u === me);
+    const row = (x, i) => `<div class="${x.u === me ? 'me' : ''}"><i>${i + 1}</i><span>${esc(x.name)}${tag(x.u)}</span><b>${fmt(x.score)}</b></div>`;
+    show(`<div class="list rank">${all.slice(0, 10).map(row).join('') || '<p class="empty">아직 올라온 기록이 없어요.<br>첫 번째 주인공이 되어보세요!</p>'}${mine >= 10 ? '<div class="gap">⋯</div>' + row(all[mine], mine) : ''}</div>
+      ${mine < 0 ? '<p class="empty" style="padding:8px 0 0">아직 랭킹에 올린 내 기록이 없어요</p>' : `<p style="margin-top:8px">내 순위 <b>${mine + 1}위</b> / ${all.length}명</p>`}${postCard()}`);
+  } else {
+    const mc = myClan(), cc = mc ? mc.cc : Cp.cc, rc = mc ? mc.rc : Cp.rc;
+    const all = Object.values(Com.clans).filter(c => Rk.filter === 'all' || (c.cc === cc && (Rk.filter === 'cc' || c.rc === rc))).map(c => ({ c, n: membersOf(c.id).length, score: clanScore(c.id) })).sort((a, b) => b.score - a.score || b.n - a.n);
+    const mine = mc ? all.findIndex(x => x.c.id === mc.id) : -1;
+    const row = (x, i) => `<div class="${mc && x.c.id === mc.id ? 'me' : ''}"><i>${i + 1}</i><span>${esc(x.c.name)} <em>${esc(ccName(x.c.cc))}·${esc(rcName(x.c.cc, x.c.rc))} ${x.n}명</em></span><b>${fmt(x.score)}</b></div>`;
+    const chips = `<div class="chips">${[['all', '전체'], ['cc', `내 국가(${ccName(cc)})`], ['rc', `내 지역(${rcName(cc, rc)})`]].map(([k, n]) => `<button class="${Rk.filter === k ? 'on' : ''}" data-act="rankfilter" data-f="${k}">${esc(n)}</button>`).join('')}</div>`;
+    show(`${chips}<div class="list rank">${all.slice(0, 10).map(row).join('') || '<p class="empty">아직 클랜이 없어요.<br>홈의 클랜 버튼에서 만들어 보세요!</p>'}${mine >= 10 ? '<div class="gap">⋯</div>' + row(all[mine], mine) : ''}</div>
+      ${mc ? (mine >= 0 ? `<p style="margin-top:8px">내 클랜 순위 <b>${mine + 1}위</b> / ${all.length}개</p>` : '') : '<p class="empty" style="padding:8px 0 0">아직 가입한 클랜이 없어요</p>'}`);
+  }
+}
+document.addEventListener('change', e => {
+  if (e.target.id === 'selCc') { Cp.cc = e.target.value; Cp.rc = Cp.cc === 'ZZ' ? 'etc' : 'r0'; dev('clanCc', Cp.cc); dev('clanRc', Cp.rc); renderClan(); }
+  else if (e.target.id === 'selRc') { Cp.rc = e.target.value; dev('clanRc', Cp.rc); renderClan(); }
+});
+
 window.addEventListener('unhandledrejection', e => { console.warn('[cosmo] 진행 중 오류', e.reason); if (G.state === 'play') { G.busy = false; G.swapping = false; G.trig = []; } });
 
 // ───────────────────────── 시작 ─────────────────────────
@@ -1086,7 +1363,7 @@ function frame(ts) {
   draw(); requestAnimationFrame(frame);
 }
 async function boot() {
-  Store.load(); layout(); G.orbitDays = realOrbitDays(); refreshMeta();
+  Store.load(); Cp.cc = dev('clanCc') || 'KR'; Cp.rc = dev('clanRc') || 'r7'; layout(); G.orbitDays = realOrbitDays(); refreshMeta();
   window.addEventListener('resize', layout);
   await loadImages(); requestAnimationFrame(frame);
   const cfg = window.FIREBASE_CONFIG;
@@ -1097,6 +1374,6 @@ async function boot() {
   } else maybeDaily();
   setInterval(refreshMeta, 60000);        // 자정이 지나면 무료 횟수 표시 갱신
 }
-window.__cp = { G, S: () => S, W, freeLeft, dev, PLANETS, planetGrab, planetRelease, trackU, findMove, findGroups, typeCounts, trySwap, useItem, shuffleBoard, mk, startGame, buildStage, L };
+window.__cp = { Com, comLoad, openClan, openRank, claimGifts, clanIdOf, zeroG: (sec = ZERO_SEC) => startZero(sec, true), zeroMove, G, S: () => S, W, freeLeft, dev, PLANETS, planetGrab, planetRelease, trackU, findMove, findGroups, typeCounts, trySwap, useItem, shuffleBoard, mk, startGame, buildStage, L };
 boot();
 })();

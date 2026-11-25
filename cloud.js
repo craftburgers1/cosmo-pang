@@ -3,10 +3,12 @@
 //   users/{uid}/cosmo/save        게임 저장 (merge)
 //   users/{uid}/wallet/main       통합 지갑 잔액 (가계부·근태 앱과 공용)
 //   users/{uid}/wallet_log/{id}   지갑 원장 (적립/차감 1건당 1문서, id는 결정적)
+//   users/{uid}/cosmo/gift        선물 하루 한도·수령 기록
+// 그리고 공용 게시판 community_board (클랜·랭킹·선물 글. content가 'ARCADE|cosmo|'로 시작, 허용 키 7개만 사용)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { getFirestore, doc, getDoc, setDoc, serverTimestamp, runTransaction, onSnapshot }
+import { getFirestore, doc, getDoc, setDoc, deleteDoc, serverTimestamp, runTransaction, onSnapshot, collection, query, where, limit, getDocs }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 export async function initCloud(config) {
@@ -36,6 +38,31 @@ export async function initCloud(config) {
     },
     signOut: () => signOut(auth),
     walletOk: false,
+    // ── 공용 게시판(community_board). 규칙상 키는 id, uid, author, content, isPrivate, createdAt, dateStr 7개만, 수정 불가, 삭제는 본인 글만
+    board: {
+      mode: '',          // 마지막 조회 방식: 'prefix'(범위 쿼리) | 'scan'(공개글 전체에서 걸러냄)
+      async list() {
+        const col = collection(db, 'community_board'), P = 'ARCADE|cosmo|';
+        const pick = snap => snap.docs.map(d => ({ docId: d.id, ...d.data() })).filter(x => typeof x.content === 'string' && x.content.startsWith(P) && x.isPrivate === false);
+        try {            // 복합 색인(isPrivate, content)이 있으면 코스모 팡 글만 읽음
+          const r = pick(await getDocs(query(col, where('isPrivate', '==', false), where('content', '>=', P), where('content', '<', P + '\uf8ff'))));
+          Cloud.board.mode = 'prefix'; return r;
+        } catch (e) {    // 색인이 없으면 공개글을 읽어 접두사로 걸러냄
+          if (e.code === 'permission-denied') throw e;
+          const r = pick(await getDocs(query(col, where('isPrivate', '==', false), limit(3000))));
+          Cloud.board.mode = 'scan'; return r;
+        }
+      },
+      async post(id, content) {
+        const u = Cloud.user; if (!u) { const e = new Error('not signed in'); e.code = 'board/not-signed-in'; throw e; }
+        const now = Date.now(), k = new Date(now + 9 * 3600e3).toISOString();
+        await setDoc(doc(db, 'community_board', id), { id, uid: u.uid, author: (u.name || '탐험가').slice(0, 30), content: String(content).slice(0, 1000), isPrivate: false, createdAt: now, dateStr: k.slice(0, 10) + ' ' + k.slice(11, 16) });
+      },
+      remove: id => deleteDoc(doc(db, 'community_board', id)),
+    },
+    // 선물 하루 한도·수령 기록 (본인 문서)
+    async giftState() { const u = Cloud.user; if (!u) return {}; const s = await getDoc(doc(db, 'users', u.uid, 'cosmo', 'gift')); return s.exists() ? s.data() : {}; },
+    async giftSave(data) { const u = Cloud.user; if (!u) return; await setDoc(doc(db, 'users', u.uid, 'cosmo', 'gift'), { ...data, updatedAt: serverTimestamp() }, { merge: true }); },
     // 지갑 적립(+)/차감(−). 반드시 트랜잭션: 원장 문서가 이미 있으면 건너뛰고(중복 방지), 잔액이 모자라면 아무것도 쓰지 않고 실패.
     // 반환 { applied, balance }. 실패 시 e.code = 'wallet/insufficient' | 'wallet/not-signed-in' | Firestore 오류 코드
     async walletApply({ logId, amount, reason, refId = '' }) {
@@ -82,6 +109,7 @@ export async function initCloud(config) {
     try {
       const r = await Cloud.walletApply({ logId: 'welcome:v1', amount: 50, reason: 'welcome', refId: 'v1' });
       Cloud.walletOk = true; window.onWallet && window.onWallet(r.balance, null, r.applied ? 'welcome' : '');
+      window.onWalletReady && window.onWalletReady();
     } catch (e) { Cloud.walletOk = false; console.warn('[cosmo] 지갑 열기 실패', e.code || e); window.onWallet && window.onWallet(null, e.code || 'error'); return; }
     const uid = fu.uid;
     unsubWallet = onSnapshot(walletRef(uid), s => {

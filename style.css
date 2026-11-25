@@ -73,7 +73,8 @@ b{font-weight:800}
   box-shadow:0 6px 0 #a34a00,0 0 34px rgba(255,180,60,.6);animation:pulse 1.8s ease-in-out infinite}
 .btn.primary em{font-style:normal;font-size:13px;background:rgba(0,0,0,.18);padding:3px 8px;border-radius:999px;margin-left:6px}
 @keyframes pulse{50%{transform:scale(1.03)}}
-.row{display:flex;gap:8px;width:100%;margin:14px 0 8px}
+.row{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;width:100%;margin:14px 0 8px}
+.row .btn{padding:11px 2px;font-size:13px;white-space:nowrap;min-width:0}
 .btn.google{width:100%;flex:none;background:#fff;color:#222;border:0;display:flex;align-items:center;justify-content:center;gap:10px}
 .dot{position:absolute;top:-4px;right:-4px;width:14px;height:14px;border-radius:50%;background:#ff3d6e;box-shadow:0 0 10px #ff3d6e;animation:blink .8s infinite}
 .foot{margin-top:8px;font-size:11px;color:#b9a8ff;opacity:.8;text-align:center}
@@ -127,6 +128,33 @@ b{font-weight:800}
   .logo{margin-top:0}.logo h1{font-size:min(13vw,50px)}.logo .kr{margin-top:2px;font-size:13px}
   #mascotImg{width:104px;margin:0}
   .stats{margin-bottom:8px}.stats div{padding:6px 4px}
-  .btn.primary{padding:13px}.freenote{margin-top:9px}.row{margin:9px 0 7px}.btn{padding:10px 8px}
+  .btn.primary{padding:13px}.freenote{margin-top:9px}.row{margin:9px 0 7px}.btn{padding:10px 8px}.row .btn{padding:10px 2px}
   .foot{margin-top:6px}
 }
+/* 클랜 · 랭킹 시트 */
+.sheet{touch-action:pan-y;overscroll-behavior:contain}
+.sheet input,.sheet select{-webkit-user-select:text;user-select:text;touch-action:auto;font:inherit;font-size:16px;color:#efeaff;min-width:0;
+  background:rgba(0,0,0,.32);border:1px solid rgba(190,160,255,.45);border-radius:12px;padding:10px 10px;flex:1;width:100%}
+.sheet select option{color:#111}
+.selrow{display:flex;gap:8px;margin:10px 0;align-items:stretch}
+.mini{border:0;border-radius:10px;padding:7px 10px;font:inherit;font-size:12px;font-weight:800;color:#2a1200;white-space:nowrap;
+  background:linear-gradient(180deg,#fff0a8,#ffc93a 55%,#ff9a2a)}
+.mini:disabled{filter:grayscale(1);opacity:.45}
+.mini.wide{padding:10px 16px;font-size:14px}
+.selrow .mini.wide{flex:none}
+.list{text-align:left;margin-top:10px;max-height:42vh;overflow-y:auto;touch-action:pan-y}
+.list>div{display:flex;gap:8px;align-items:center;padding:8px 10px;border-radius:10px;font-size:14px}
+.list>div:nth-child(odd){background:rgba(0,0,0,.22)}
+.list>div.me{box-shadow:inset 0 0 0 1px #ffd23a}
+.list>div.gap{justify-content:center;padding:0;background:none;opacity:.6}
+.list span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.list i{width:22px;text-align:center;font-style:normal;font-weight:800;color:#ffd23a;flex:none}
+.list b{flex:none}
+.list em{font-style:normal;font-size:10px;font-weight:700;color:#9fe8ff;border:1px solid rgba(159,232,255,.5);border-radius:999px;padding:1px 6px;margin-left:3px}
+.empty{padding:18px 0;opacity:.8}
+.tabs,.chips{display:flex;gap:6px;margin:10px 0}
+.tabs button,.chips button{flex:1;min-width:0;border:1px solid rgba(190,160,255,.4);background:rgba(0,0,0,.25);color:#d6caff;font:inherit;font-weight:700;
+  font-size:13px;padding:9px 2px;border-radius:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chips button{font-size:11px;padding:6px 2px;border-radius:999px}
+.tabs button.on,.chips button.on{background:linear-gradient(180deg,#fff0a8,#ffc93a);color:#2a1200;border-color:transparent}
+.card{margin-top:12px;padding:12px;border-radius:14px;background:rgba(255,200,60,.14);border:1px solid rgba(255,210,58,.6)}
