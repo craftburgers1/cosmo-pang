@@ -110,8 +110,23 @@ b{font-weight:800}
 .help{text-align:left}
 .help li{margin:7px 0;font-size:13px;line-height:1.5;color:#e2d8ff}
 .help ul{padding-left:18px;margin:8px 0}
-.toast{position:absolute;left:50%;bottom:120px;transform:translateX(-50%);z-index:30;padding:10px 18px;border-radius:999px;
+.toast{position:absolute;left:50%;top:calc(62px + env(safe-area-inset-top));transform:translateX(-50%);z-index:30;padding:10px 18px;border-radius:999px;
   background:rgba(10,6,30,.92);border:1px solid rgba(190,160,255,.5);font-size:13px;white-space:nowrap;animation:pop .25s}
 #loginPhoto{width:26px;height:26px;border-radius:50%;object-fit:cover}
 #loginOut{font-size:11px;color:#777;border:1px solid #ccc;border-radius:999px;padding:2px 8px;margin-left:4px}
-.toast{max-width:92%;white-space:normal;text-align:center}
+.toast{width:max-content;max-width:92%;white-space:normal;text-align:center;pointer-events:none}
+.chip.two{padding:4px 12px;line-height:1.1;align-items:center}
+.chip.two div{display:flex;flex-direction:column}
+.chip.two small{font-size:9.5px;color:#9fe8ff;font-weight:700;white-space:nowrap}
+.freenote{margin-top:12px;font-size:13px;color:#d6caff;text-align:center}
+.freenote b{color:#3df0c8;font-size:15px}
+.cometbtn small{white-space:nowrap}
+.cometbtn.off{filter:grayscale(1);opacity:.5}
+.sheet .btnrow .btn{min-width:0}
+@media (max-height:700px){
+  .logo{margin-top:0}.logo h1{font-size:min(13vw,50px)}.logo .kr{margin-top:2px;font-size:13px}
+  #mascotImg{width:104px;margin:0}
+  .stats{margin-bottom:8px}.stats div{padding:6px 4px}
+  .btn.primary{padding:13px}.freenote{margin-top:9px}.row{margin:9px 0 7px}.btn{padding:10px 8px}
+  .foot{margin-top:6px}
+}

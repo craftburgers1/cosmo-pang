@@ -16,7 +16,7 @@
   <!-- 플레이 HUD -->
   <div id="hud" class="hidden">
     <div class="topbar">
-      <div class="chip"><span class="star">✦</span><b id="hudCredits">0</b></div>
+      <div class="chip two"><span class="star">✦</span><div><b id="hudCredits">0</b><small id="hudFree">무료 10/10</small></div></div>
       <div class="scorebox"><small>SCORE</small><b id="hudScore">0</b></div>
       <button class="iconbtn" id="btnQuit" aria-label="그만하기">✕</button>
     </div>
@@ -25,7 +25,7 @@
         <div class="bar time"><i id="timeFill"></i><span id="timeText">60</span></div>
         <div class="bar fever"><i id="feverFill"></i><span id="feverText">FEVER</span></div>
       </div>
-      <button id="btnComet" class="cometbtn"><span class="ic">☄</span><small id="cometCost">무료 1회</small></button>
+      <button id="btnComet" class="cometbtn"><span class="ic">☄</span><small id="cometCost">무료 · 3회</small></button>
     </div>
   </div>
 
@@ -46,7 +46,8 @@
       <div><small>최고 스테이지</small><b id="homeCombo">0</b></div>
       <div><small>탐사 레벨</small><b id="homeLevel">1</b></div>
     </div>
-    <button class="btn primary" id="btnPlay">게임 시작 <em>✦10</em></button>
+    <button class="btn primary" id="btnPlay">게임 시작 <em>무료</em></button>
+    <div class="freenote" id="freeNote">오늘 남은 무료 <b>10/10</b></div>
     <div class="row">
       <button class="btn" id="btnDaily">출석 보상<i id="dailyDot" class="dot hidden"></i></button>
       <button class="btn" id="btnRank">내 기록</button>
@@ -58,7 +59,7 @@
       <span id="loginLabel">Google 계정으로 로그인</span>
       <small id="loginOut" class="hidden">로그아웃</small>
     </button>
-    <div class="foot" id="saveNote">게스트 모드 · 이 기기에만 저장됩니다</div>
+    <div class="foot" id="saveNote">게스트 모드 · 이 기기에만 저장 · 하루 무료 10판</div>
   </div>
 
   <!-- 모달 -->

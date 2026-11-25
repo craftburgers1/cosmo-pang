@@ -3,9 +3,11 @@
 'use strict';
 
 // ───────────────────────── 기본 상수 ─────────────────────────
-const DEMO = true;                // 데모 버전: 크레딧 무제한. 정식 출시 때 false로 바꾸면 크레딧 차감이 켜짐
 const COLS = 7, ROWS = 8, NT = 6;
 const START_TIME = 60, DRAG_TIME = 4, MAX_CHARGE = 3, STAGE_BONUS_TIME = 15, PLAY_COST = 10, COMET_COST = 15;
+const FREE_PLAYS = 10;             // 하루 무료 플레이 (KST 자정 리셋)
+const COMET_MAX = 3;               // ☄ 혜성 폭탄: 한 판(게임 1회)당 최대 사용 횟수. 첫 1회 무료, 이후 1회당 COMET_COST
+const NAT_COMET_PER_STAGE = 1, CHARGE_REFUND_PER_STAGE = 1;   // 자동 지급 아이템 횟수 제한
 const DAILY = [50, 60, 70, 80, 100, 120, 200];
 const TYPES = [
   { k: 'earth',   col: '#4db2ff' },
@@ -37,14 +39,24 @@ const irnd = n => Math.floor(Math.random() * n);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const key = (r, c) => r * COLS + c;
 const fmt = n => Math.round(n).toLocaleString('ko-KR');
-const today = (d = new Date()) => d.toLocaleDateString('sv-SE');
-const yesterday = () => { const d = new Date(); d.setDate(d.getDate() - 1); return today(d); };
+// 날짜는 모두 한국시간(KST, UTC+9) 기준 'YYYY-MM-DD'
+const today = (ms = Date.now()) => new Date(ms + 9 * 3600e3).toISOString().slice(0, 10);
+const yesterday = () => today(Date.now() - 86400e3);
 
 // ───────────────────────── 저장 ─────────────────────────
 const SAVE_KEY = 'cosmopang.v1';
-const defaults = () => ({ credits: 50, best: 0, bestStage: 0, maxCombo: 0, games: 0, total: 0, streak: 0, lastClaim: '', sound: true, updatedAt: 0 });
+const defaults = () => ({ credits: 0, playDate: '', playsToday: 0, best: 0, bestStage: 0, maxCombo: 0, games: 0, total: 0, streak: 0, lastClaim: '', sound: true, updatedAt: 0 });
 let S = defaults();
 const DEVICE_KEY = 'cosmopang.device';
+function dev(k, v) {       // 이 기기에만 남기는 표시 (출석 시트 자동 표시일, 로컬 크레딧 이관 여부 등)
+  let d = {}; try { d = JSON.parse(localStorage.getItem(DEVICE_KEY) || '{}'); } catch (e) { /* 무시 */ }
+  if (v !== undefined) { d[k] = v; try { localStorage.setItem(DEVICE_KEY, JSON.stringify(d)); } catch (e) { /* 무시 */ } }
+  return d[k];
+}
+// 통합 크레딧 지갑 상태 (로그인 시 users/{uid}/wallet/main 의 balance). 게스트는 크레딧 없음
+const W = { bal: null, err: '' };
+const signedIn = () => !!(window.Cloud && Cloud.user);
+const freeLeft = () => S.playDate === today() ? Math.max(0, FREE_PLAYS - (S.playsToday || 0)) : FREE_PLAYS;
 function deviceRecord(upd) {
   let d = { best: 0, bestStage: 0 };
   try { d = Object.assign(d, JSON.parse(localStorage.getItem(DEVICE_KEY) || '{}')); } catch (e) { /* 무시 */ }
@@ -197,7 +209,7 @@ function buildStage() {
     const d = dy ? (dy > 0 ? ROWS - 1 - p.ty : p.ty) : (dx > 0 ? COLS - 1 - p.tx : p.tx);
     p.x -= dx * (COLS + 2); p.y -= dy * (ROWS + 2); tween(p, p.tx, p.ty, 380 + d * 45 + irnd(60), 1, true);
   });
-  G.time = G.stageTime = Math.max(36, START_TIME - (G.stage - 1) * 3); G.freeComet = 1; G.charges = 2; G.cometT = rnd(20, 30); G.hint = null; G.idle = 0; G.drag = null; G.pdrag = null; G.ver++;
+  G.time = G.stageTime = Math.max(36, START_TIME - (G.stage - 1) * 3); G.charges = 2; G.refundLeft = CHARGE_REFUND_PER_STAGE; G.natLeft = NAT_COMET_PER_STAGE; G.cometT = rnd(20, 30); G.hint = null; G.idle = 0; G.drag = null; G.pdrag = null; G.ver++;
   callout('STAGE ' + G.stage, '#3df0c8');
 }
 const remaining = () => G.grid.flat().filter(p => p && p.kind !== 'hole').length;
@@ -353,7 +365,7 @@ async function resolve(wave) {
       await popGroups(g);
     }
     G.waveMult = 1;
-    if (k >= 3 && G.charges < MAX_CHARGE) { G.charges++; G.texts.push({ x: L.W / 2, y: L.sy + 30, s: '중력 조종 +1', t: 0, size: 18, col: '#ffe08a' }); Snd.coin(); }
+    if (k >= 3 && G.charges < MAX_CHARGE && G.refundLeft > 0) { G.charges++; G.refundLeft--; G.texts.push({ x: L.W / 2, y: L.sy + 30, s: '중력 조종 +1', t: 0, size: 18, col: '#ffe08a' }); Snd.coin(); }
   }
   for (let guard = 0; guard < 60 && G.state === 'play'; guard++) {
     const g = findGroups();
@@ -425,6 +437,7 @@ async function cometStrike(user) {
     lines = [cand[irnd(cand.length)]]; callout('혜성이다!', '#9fe8ff');
   }
   await sweep(lines); await resolve(false);
+  if (!user) G.natLeft--;
   G.cometT = rnd(20, 30); G.busy = false;
 }
 async function holeEat(r, c, h) {
@@ -466,13 +479,28 @@ function burst(x, y, col, n) {
 
 // ───────────────────────── 게임 흐름 ─────────────────────────
 function realOrbitDays() { return (Date.now() - Date.UTC(2000, 0, 1, 12)) / 86400000; }
-function startGame() {
-  if (!DEMO && S.credits < PLAY_COST) { toast('크레딧이 부족해요 — 내일 출석 보상을 받으세요 ✦'); return; }
+function payFail(e, what) {       // 결제 실패: 로컬 크레딧으로 대신 결제하지 않고 안내만
+  const code = errCode(e);
+  if (code === 'wallet/insufficient') openModal(`<h2>크레딧이 부족해요</h2><p>${what}에 필요한 크레딧이 모자라요.<br>현재 잔액 <b>✦${fmt(e.balance || 0)}</b></p><p>출석 보상, 스테이지 클리어, 가계부·근태 앱 활동으로 크레딧을 모을 수 있어요.</p><button class="btn" data-act="close" style="width:100%">닫기</button>`);
+  else { console.warn('[cosmo] 결제 실패', e); toast(`결제하지 못했어요 (${code}) — 크레딧은 차감되지 않았어요`, 5000); }
+}
+let starting = false;
+async function startGame() {
+  if (starting || G.state === 'play' || G.state === 'ending') return;
   Snd.init();
-  if (!DEMO) S.credits -= PLAY_COST;
+  const runId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  if (freeLeft() > 0) { if (S.playDate !== today()) { S.playDate = today(); S.playsToday = 0; } S.playsToday++; }
+  else if (!signedIn()) {
+    openModal(`<h2>오늘 무료 ${FREE_PLAYS}판을 다 썼어요</h2><p>내일 0시(한국시간)에 다시 ${FREE_PLAYS}판이 채워져요.</p><p>Google 로그인하면 크레딧(한 판 ✦${PLAY_COST})으로 계속 할 수 있어요.</p><div class="btnrow"><button class="btn" data-act="close">닫기</button><button class="btn" data-act="login">로그인</button></div>`); return;
+  } else {
+    starting = true; toast('크레딧 결제 중…');
+    try { const r = await Cloud.walletApply({ logId: `cosmo:play:${runId}`, amount: -PLAY_COST, reason: 'play', refId: runId }); W.bal = r.balance; W.err = ''; }
+    catch (e) { starting = false; $('toast').classList.add('hidden'); payFail(e, '한 판'); return; }
+    starting = false; $('toast').classList.add('hidden');
+  }
   S.games++; Store.save();
   Object.assign(G, { state: 'play', busy: true, stage: 1, cleared: 0, score: 0, shown: 0, combo: 0, comboT: 0, maxCombo: 0, fever: 0, feverT: 0,
-    drag: null, pdrag: null, maxWave: 0, waveMult: 1, usedPlanet: false, cometQ: false, shake: 0, earned: 0, orbitDays: realOrbitDays(), gravLock: 1.5, gravDirty: false,
+    drag: null, pdrag: null, maxWave: 0, waveMult: 1, usedPlanet: false, cometQ: false, cometUsed: 0, cometPaying: false, runId, shake: 0, earned: 0, orbitDays: realOrbitDays(), gravLock: 1.5, gravDirty: false,
     dying: [], parts: [], rings: [], beams: [], texts: [], comets: [], callout: null });
   PLANETS.forEach(p => { p.off = 0; }); updateGravity(0, true); buildStage();
   $('home').classList.add('hidden'); $('hud').classList.remove('hidden'); closeModal(); refreshMeta();
@@ -483,8 +511,14 @@ async function failStage(why) {
   callout('STAGE ' + G.stage + ' 실패', '#ff5252'); Snd.over(); G.shake = 10; await sleep(1500);
   const isBest = G.score > S.best;
   G.earned = Math.min(5, G.cleared);
-  S.best = Math.max(S.best, G.score); S.bestStage = Math.max(S.bestStage || 0, G.cleared); S.maxCombo = Math.max(S.maxCombo, G.maxCombo); S.total += G.score; S.credits += G.earned;
+  S.best = Math.max(S.best, G.score); S.bestStage = Math.max(S.bestStage || 0, G.cleared); S.maxCombo = Math.max(S.maxCombo, G.maxCombo); S.total += G.score;
   deviceRecord({ best: G.score, bestStage: G.cleared });
+  // 스테이지 클리어 적립은 지갑에 (트랜잭션 + 원장). 게스트는 적립 없음
+  let earnMsg = signedIn() ? `<span class="star">✦</span> +${G.earned}` : '로그인 시 적립';
+  if (signedIn() && G.earned > 0) {
+    try { const r = await Cloud.walletApply({ logId: `cosmo:stage_clear:${G.runId}`, amount: G.earned, reason: 'stage_clear', refId: G.runId }); W.bal = r.balance; }
+    catch (e) { console.warn('[cosmo] 클리어 적립 실패', e); earnMsg = `적립 실패 (${errCode(e)})`; }
+  }
   Store.save(); G.state = 'over'; G.busy = false;
   if (isBest) Snd.fever(); else Snd.coin();
   openModal(`
@@ -495,9 +529,10 @@ async function failStage(why) {
     <div class="kv"><span>클리어한 스테이지</span><b>${G.cleared}</b></div>
     <div class="kv"><span>최고 점수 / 최고 스테이지</span><b>${fmt(S.best)} / ${S.bestStage}</b></div>
     <div class="kv"><span>최대 콤보 / 최대 파도 연쇄</span><b>${G.maxCombo} / ${G.maxWave || 0}</b></div>
-    <div class="kv"><span>획득 크레딧 (클리어 1판당 1)</span><b><span class="star">✦</span> +${G.earned}</b></div>
-    <div class="btnrow"><button class="btn" data-act="home">홈으로</button><button class="btn primary" style="font-size:16px;padding:12px;animation:none" data-act="replay">다시 하기 <em>${DEMO ? '무료' : '✦' + PLAY_COST}</em></button></div>
-    ${window.Cloud && Cloud.user ? '' : '<p style="font-size:11px;opacity:.7;margin-top:12px">Google 로그인하면 기록이 계정에 저장돼요</p>'}`);
+    <div class="kv"><span>획득 크레딧 (클리어 1스테이지당 1, 최대 5)</span><b>${earnMsg}</b></div>
+    <div class="kv"><span>오늘 남은 무료</span><b>${freeLeft()}/${FREE_PLAYS}</b></div>
+    <div class="btnrow"><button class="btn" data-act="home">홈으로</button><button class="btn primary" style="font-size:16px;padding:12px;animation:none" data-act="replay">다시 하기 <em>${freeLeft() > 0 ? '무료' : '✦' + PLAY_COST}</em></button></div>
+    ${window.Cloud && Cloud.user ? '' : '<p style="font-size:11px;opacity:.7;margin-top:12px">Google 로그인하면 기록이 저장되고 크레딧이 쌓여요</p>'}`);
 }
 function goHome() { G.state = 'home'; $('hud').classList.add('hidden'); $('home').classList.remove('hidden'); closeModal(); refreshMeta(); maybeDaily(); }
 
@@ -581,7 +616,7 @@ function update(dt) {
     if (G.gravDirty) { G.gravDirty = false; G.busy = true; resolve(true).then(() => { G.busy = false; }); }
     else if (act) act();
     else if (G.cometQ) { G.cometQ = false; cometStrike(true); }
-    else if ((G.cometT -= dt) <= 0 && G.left > 0) cometStrike(false);
+    else if (G.natLeft > 0 && (G.cometT -= dt) <= 0 && G.left > 0) cometStrike(false);
     else {
       G.idle += dt;
       if (G.idle > 5 && !G.hint) { const m = findHintMove(); G.hint = new Set(m ? m.map(([r, c]) => G.grid[r][c] && G.grid[r][c].id) : []); }
@@ -592,7 +627,8 @@ function update(dt) {
   $('timeText').textContent = Math.max(0, Math.ceil(G.time)); tb.classList.toggle('low', G.time <= 10);
   $('feverFill').style.width = Math.min(100, G.fever) + '%'; $('feverFill').parentNode.classList.toggle('on', G.feverT > 0);
   $('feverText').textContent = G.feverT > 0 ? 'FEVER ×2' : 'FEVER';
-  $('cometCost').textContent = DEMO ? '무제한' : G.freeComet > 0 ? '무료 1회' : '✦' + COMET_COST;
+  const cl = COMET_MAX - G.cometUsed; $('cometCost').textContent = cl <= 0 ? '소진' : (G.cometUsed === 0 ? '무료' : signedIn() ? '✦' + COMET_COST : '로그인') + ' · ' + cl + '회';
+  $('btnComet').classList.toggle('off', cl <= 0 || G.cometPaying);
 }
 function stepPiece(p, dt) {
   if (p.td > 0) {
@@ -633,7 +669,7 @@ function drawStrip() {
   ctx.font = '900 22px sans-serif'; ctx.fillStyle = '#fff'; ctx.fillText('STAGE ' + G.stage, L.W / 2, y - 9);
   ctx.font = '700 12px sans-serif'; ctx.fillStyle = '#b9a8ff'; ctx.fillText(`남은 블록 ${G.left}`, L.W / 2 - 46, y + 13);
   ctx.fillStyle = G.charges > 0 ? '#ffe08a' : '#7d72a8'; ctx.fillText('중력 조종 ' + '◆'.repeat(Math.max(0, G.charges)) + '◇'.repeat(Math.max(0, MAX_CHARGE - G.charges)), L.W / 2 + 46, y + 13);
-  if (G.stage === 1 && !G.usedPlanet && G.state === 'play' && G.time < 52) { ctx.globalAlpha = 0.6 + 0.4 * Math.sin(T * 5); ctx.fillStyle = '#ffe08a'; ctx.fillText('☝ 궤도의 행성을 끌어 옮기면 중력 파도!', L.W / 2, y + 31); ctx.globalAlpha = 1; }
+  if (G.stage === 1 && !G.usedPlanet && G.state === 'play' && G.time < 52) { ctx.globalAlpha = 0.6 + 0.4 * Math.sin(T * 5); ctx.fillStyle = '#ffe08a'; ctx.fillText('☝ 궤도의 행성을 끌어 옮기면 중력 파도!', L.W / 2, L.ty + L.th + 26); ctx.globalAlpha = 1; }
   if (G.combo >= 2) {
     const x = L.W * 0.86, k = Math.max(0, G.comboT / G.comboMax), R = 24;
     ctx.lineWidth = 4.5; ctx.lineCap = 'round';
@@ -800,10 +836,15 @@ window.addEventListener('pointercancel', () => { planetRelease(); dragEnd(); });
 // ───────────────────────── 메타 UI ─────────────────────────
 let toastTimer = 0;
 function toast(s, ms = 2400) { const t = $('toast'); t.textContent = s; t.classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add('hidden'), ms); }
-function openModal(html) { $('sheet').innerHTML = html; $('modal').classList.remove('hidden'); }
+function openModal(html) { sheetName = ''; $('sheet').innerHTML = html; $('modal').classList.remove('hidden'); }
 function closeModal() { $('modal').classList.add('hidden'); }
 function refreshMeta() {
-  $('homeCredits').textContent = $('hudCredits').textContent = DEMO ? '∞' : fmt(S.credits);
+  const u0 = signedIn();
+  $('homeCredits').textContent = $('hudCredits').textContent = !u0 ? '게스트' : W.bal !== null ? fmt(W.bal) : W.err ? '연결 실패' : '…';
+  const fl = freeLeft();
+  $('hudFree').textContent = `무료 ${fl}/${FREE_PLAYS}`;
+  $('freeNote').innerHTML = `오늘 남은 무료 <b>${fl}/${FREE_PLAYS}</b>` + (fl > 0 ? '' : u0 ? ` · 이제 한 판 ✦${PLAY_COST}` : ' · 내일 0시에 충전');
+  document.querySelector('#btnPlay em').textContent = fl > 0 ? '무료' : u0 ? '✦' + PLAY_COST : '내일 다시';
   $('homeBest').textContent = fmt(S.best); $('homeCombo').textContent = S.bestStage || 0;
   $('homeLevel').textContent = 'Lv.' + (Math.floor(Math.sqrt(S.total / 50000)) + 1);
   $('dailyDot').classList.toggle('hidden', S.lastClaim === today());
@@ -812,46 +853,60 @@ function refreshMeta() {
   $('loginLabel').textContent = u ? u.name : 'Google 계정으로 로그인';
   $('loginOut').classList.toggle('hidden', !u); $('loginG').classList.toggle('hidden', !!(u && u.photo));
   const ph = $('loginPhoto'); ph.classList.toggle('hidden', !(u && u.photo)); if (u && u.photo && ph.getAttribute('src') !== u.photo) ph.src = u.photo;
-  $('saveNote').textContent = (u ? (Cloud.loaded ? '계정에 자동 저장 중 ☁' : '클라우드 연결 실패 · 이 기기에만 저장 중') : '게스트 모드 · 이 기기에만 저장됩니다') + (DEMO ? ' · 데모(크레딧 무제한)' : '');
+  $('saveNote').textContent = u ? (Cloud.loaded ? '계정에 자동 저장 중 ☁' : '클라우드 연결 실패 · 이 기기에만 저장 중') + (W.err ? ` · 지갑 연결 실패(${W.err})` : '') : `게스트 모드 · 이 기기에만 저장 · 하루 무료 ${FREE_PLAYS}판`;
 }
 function dailyInfo() {
   const can = S.lastClaim !== today();
   const next = S.lastClaim === yesterday() ? S.streak + 1 : 1;
   return { can, streak: can ? next : S.streak, idx: ((can ? next : S.streak) - 1 + 7) % 7 };
 }
+let sheetName = '';
 function showDaily() {
-  const d = dailyInfo();
+  const d = dailyInfo(), u = signedIn();
   const tiles = DAILY.map((v, i) => `<div class="day ${i < d.idx || (!d.can && i === d.idx) ? 'done' : ''} ${d.can && i === d.idx ? 'today' : ''}">${i + 1}일차<b>✦${v}</b></div>`).join('');
+  const main = !u ? `<p><b>출석 보상은 로그인 후 지갑에 적립돼요</b></p><button class="btn primary" style="animation:none;font-size:17px" data-act="login">Google 로그인하고 받기</button>`
+    : d.can ? `<button class="btn primary" style="animation:none" data-act="claim">오늘 보상 받기 ✦${DAILY[d.idx]}</button>`
+    : `<p><b>오늘 보상 수령 완료</b> · 연속 ${S.streak}일째<br>다음 보상까지 <b id="cd"></b></p>`;
   openModal(`<h2>출석 보상</h2><p>매일 접속하면 크레딧을 드려요.<br>연속 출석할수록 보상이 커지고, 하루라도 빠지면 1일차부터 다시 시작해요.</p>
-    <div class="days">${tiles}</div>
-    ${d.can ? `<button class="btn primary" style="animation:none" data-act="claim">오늘 보상 받기 ✦${DAILY[d.idx]}</button>`
-            : `<p><b>오늘 보상 수령 완료</b> · 연속 ${S.streak}일째<br>다음 보상까지 <b id="cd"></b></p><button class="btn" data-act="close" style="width:100%">닫기</button>`}`);
-  tickCountdown();
+    <div class="days">${tiles}</div>${main}
+    <button class="btn" data-act="close" style="width:100%;margin-top:10px">닫기</button>`);
+  sheetName = 'daily'; tickCountdown();
 }
 function tickCountdown() {
   const el = $('cd'); if (!el) return;
-  const n = new Date(), m = new Date(n); m.setHours(24, 0, 0, 0); const s = Math.floor((m - n) / 1000);
+  const s = Math.floor((86400e3 - ((Date.now() + 9 * 3600e3) % 86400e3)) / 1000);     // 한국시간 자정까지
   el.textContent = [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map(v => String(v).padStart(2, '0')).join(':');
   setTimeout(tickCountdown, 1000);
 }
-function claimDaily() {
-  const d = dailyInfo(); if (!d.can) return;
-  S.streak = d.streak; S.lastClaim = today(); S.credits += DAILY[d.idx]; Store.save();
-  Snd.init(); Snd.coin(); toast(`✦${DAILY[d.idx]} 크레딧 획득! 연속 ${S.streak}일째`); showDaily();
+let claiming = false;
+async function claimDaily() {
+  const d = dailyInfo(); if (!d.can || claiming || !signedIn()) return;
+  claiming = true; const date = today(), amt = DAILY[d.idx];
+  try {
+    const r = await Cloud.walletApply({ logId: `cosmo:attendance:${date}`, amount: amt, reason: 'attendance', refId: date });
+    W.bal = r.balance; S.streak = d.streak; S.lastClaim = date; Store.save();
+    Snd.init(); Snd.coin(); toast(r.applied ? `✦${amt} 크레딧 적립! 연속 ${S.streak}일째` : '오늘 보상은 이미 받았어요 (다른 기기)');
+  } catch (e) { console.warn('[cosmo] 출석 적립 실패', e); toast(`출석 보상을 적립하지 못했어요 (${errCode(e)})`, 5000); }
+  claiming = false; if (sheetName === 'daily' && !$('modal').classList.contains('hidden')) showDaily();
 }
-function maybeDaily() { if (G.state === 'home' && S.lastClaim !== today() && $('modal').classList.contains('hidden')) showDaily(); }
+// 출석 시트는 하루 1회만 자동으로 뜸 (이 기기 기준). 그 외에는 출석 보상 버튼으로
+function maybeDaily() {
+  if (G.state !== 'home' || S.lastClaim === today() || dev('dailyShown') === today() || !$('modal').classList.contains('hidden')) return;
+  dev('dailyShown', today()); showDaily();
+}
 function showHelp() {
   openModal(`<h2>게임 방법</h2><div class="help"><ul>
     <li><b>블록을 잡고 끌어요.</b> 끌고 지나가는 블록들과 자리가 바뀝니다(${DRAG_TIME}초 제한). 손을 떼면 같은 행성이 한 줄로 3개 이상 맞은 곳이 터져요.</li>
     <li><b>평소엔 무중력.</b> 터져도 나머지 블록은 그 자리에 떠 있습니다. 새 블록도 생기지 않아요.</li>
     <li><b>★ 중력 파도</b> — 궤도를 도는 <b>행성을 손가락으로 끌어 다른 변으로 옮기면</b> 중력이 바뀌고, 모든 블록이 그쪽으로 쏟아집니다. 파도 중에는 줄이 아니어도 <b>같은 행성 3개 이상이 붙어 뭉치면</b> 터지고, <b>연쇄마다 점수 ×2, ×3, ×4… 그리고 +2초.</b> 빈칸을 만들어 판을 짜둔 뒤 한 번에 쏟는 게 핵심이에요.</li>
-    <li>중력 조종은 판마다 ◆◆ 2번. 파도 3연쇄 이상이면 ◆ 하나를 돌려받습니다. 행성이 돌다가 저절로 중력이 바뀌기도 해요.</li>
+    <li>중력 조종은 스테이지마다 ◆◆ 2번. 파도 3연쇄 이상이면 ◆ 하나를 돌려받습니다(스테이지당 1번). 행성이 돌다가 저절로 중력이 바뀌기도 해요.</li>
     <li>변마다 적힌 숫자가 그쪽 행성들의 힘이고, <b>가장 큰 변</b>이 중력 방향입니다. 큰 행성일수록 힘이 세요.</li>
     <li>제한 시간(1판 ${START_TIME}초, 판마다 3초씩 줄어 최소 36초) 안에 전부 없애면 다음 스테이지, 못 없애면 <b>실패</b>. 한 행성이 2개만 남으면 2개만 붙여도 터지고, 1개만 남으면 스스로 사라져요.</li>
     <li><b>4개</b> = 2배 +2초 · <b>ㄱ/ㅗ 모양</b> = 3배 +3초 · <b>5개</b> = 초신성(같은 행성 전부 소멸) +4초.</li>
     <li><b>블랙홀</b> — 끌 수도 지나갈 수도 없는 벽. 중력 방향에서 바로 옆에 붙은 블록을 삼키고 <b>−2초</b>.</li>
     <li><b>외계행성</b> — 0이 되면 폭발 <b>−8초</b>. 바로 옆에서 매치를 터뜨리면 해체 +2초.</li>
-    <li><b>혜성</b> — 가끔 한 줄을 쓸어줍니다. ☄ 버튼은 판마다 1회 무료.</li></ul></div>
+    <li><b>혜성</b> — 스테이지마다 한 번 저절로 날아와 한 줄을 쓸어줍니다. ☄ 버튼은 한 판에 최대 ${COMET_MAX}번: 첫 번째 무료, 그다음부터 ✦${COMET_COST}.</li>
+    <li><b>하루 무료 ${FREE_PLAYS}판</b>(한국시간 자정 리셋). 다 쓰면 로그인한 계정의 크레딧 ✦${PLAY_COST}으로 계속할 수 있어요. 크레딧은 출석 보상, 스테이지 클리어(1스테이지당 ✦1, 최대 5), 가계부·근태 앱 활동으로 같은 지갑에 쌓입니다.</li></ul></div>
     <button class="btn" data-act="close" style="width:100%">확인</button>`);
 }
 function showRank() {
@@ -861,6 +916,8 @@ function showRank() {
     <div class="kv"><span>${u ? '내 계정' : '현재'} 최고 점수</span><b>${fmt(S.best)}</b></div>
     <div class="kv"><span>${u ? '내 계정' : '현재'} 최고 스테이지</span><b>${S.bestStage || 0}</b></div>
     <div class="kv"><span>최대 콤보 · 플레이 횟수</span><b>${S.maxCombo} · ${S.games}판</b></div>
+    ${u ? `<div class="kv"><span>크레딧 지갑 잔액</span><b><span class="star">✦</span> ${W.bal !== null ? fmt(W.bal) : '—'}</b></div>` : ''}
+    <div class="kv"><span>오늘 남은 무료</span><b>${freeLeft()}/${FREE_PLAYS}</b></div>
     <div class="kv"><span>이 기기 최고 점수</span><b>${fmt(d.best)}</b></div>
     <div class="kv"><span>이 기기 최고 스테이지</span><b>${d.bestStage}</b></div>
     <button class="btn" data-act="close" style="width:100%;margin-top:14px">닫기</button>`);
@@ -874,27 +931,60 @@ async function login() {
 window.onCloudError = e => toast('로그인 실패: ' + errCode(e), 6000);
 // 로그인 완료 시 클라우드 데이터와 병합 (클라우드 우선, 최고 기록은 큰 값)
 window.onCloudUser = (user, cloud) => {
+  const local = S, legacy = Math.max(0, Math.floor(Number(local.credits) || 0));     // 이 기기에 남아 있던 예전 로컬 크레딧
   if (user && cloud) {
-    const local = S; S = Object.assign(defaults(), cloud, { sound: local.sound });
+    S = Object.assign(defaults(), cloud, { sound: local.sound });
     S.best = Math.max(cloud.best || 0, local.best); S.maxCombo = Math.max(cloud.maxCombo || 0, local.maxCombo); S.bestStage = Math.max(cloud.bestStage || 0, local.bestStage || 0);
-    try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); } catch (e) { /* 무시 */ }
+    // 오늘 무료 사용 횟수는 계정·기기 중 큰 값
+    const t = today(), a = cloud.playDate === t ? cloud.playsToday || 0 : 0, b = local.playDate === t ? local.playsToday || 0 : 0;
+    S.playDate = t; S.playsToday = Math.max(a, b);
   }
-  if (user) { if (!cloud) Cloud.save(S); toast(Cloud.loaded ? `${user.name}님, 환영해요!` : '로그인됨 · 클라우드 불러오기 실패(콘솔 확인)'); }
-  refreshMeta(); maybeDaily();
+  if (user) {
+    S.credits = 0;                          // 크레딧은 이제 지갑에만 있음
+    try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); } catch (e) { /* 무시 */ }
+    if (!cloud) Cloud.save(S);
+    toast(Cloud.loaded ? `${user.name}님, 환영해요!` : '로그인됨 · 클라우드 불러오기 실패(콘솔 확인)');
+    migrateLocalCredits(legacy);
+  } else { W.bal = null; W.err = ''; }
+  refreshMeta();
+  if (sheetName === 'daily' && !$('modal').classList.contains('hidden')) showDaily(); else maybeDaily();
+};
+// 예전 로컬 크레딧을 지갑으로 1회만 이관. 계정에는 원장 id(cosmo:migrate:v1), 기기에는 migrated 표시를 남겨 중복 방지
+async function migrateLocalCredits(legacy) {
+  if (dev('migrated')) return;
+  if (legacy <= 0) { dev('migrated', today()); return; }
+  try {
+    const r = await Cloud.walletApply({ logId: 'cosmo:migrate:v1', amount: Math.min(500, legacy), reason: 'migrate', refId: 'local' });
+    dev('migrated', today()); W.bal = r.balance; refreshMeta();
+    if (r.applied) toast(`이 기기의 크레딧 ✦${Math.min(500, legacy)}을 지갑으로 옮겼어요`, 4000);
+  } catch (e) { S.credits = legacy; try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); } catch (e2) { /* 무시 */ } console.warn('[cosmo] 로컬 크레딧 이관 실패 — 다음 로그인 때 다시 시도', e); }
+}
+// 지갑 잔액 갱신 (cloud.js가 호출). err가 있으면 유료 결제는 막히고 안내만
+window.onWallet = (bal, err, note) => {
+  W.bal = bal; W.err = err === 'signed-out' ? '' : (err || '');
+  if (note === 'welcome') toast('웰컴 크레딧 ✦50을 드렸어요!', 4000);
+  refreshMeta();
 };
 
 document.addEventListener('click', e => {
   const act = e.target.closest('[data-act]'); if (!act) return;
-  ({ close: closeModal, home: goHome, replay: () => { closeModal(); startGame(); if (G.state !== 'play') goHome(); }, claim: claimDaily })[act.dataset.act]();
+  ({ close: closeModal, home: goHome, replay: () => { goHome(); startGame(); }, claim: claimDaily, login: () => { if (sheetName !== 'daily') closeModal(); login(); } })[act.dataset.act]();
 });
 $('btnPlay').onclick = startGame; $('btnDaily').onclick = showDaily; $('btnHelp').onclick = showHelp; $('btnRank').onclick = showRank; $('btnLogin').onclick = login;
 $('btnSound').onclick = () => { S.sound = !S.sound; Snd.init(); Snd.mute(S.sound); Store.save(); };
 $('btnQuit').onclick = () => { if (G.state !== 'play') return; openModal(`<h2>그만할까요?</h2><p>지금 나가면 이번 판 점수는 저장되지 않아요.</p><div class="btnrow"><button class="btn" data-act="close">계속하기</button><button class="btn" data-act="home">나가기</button></div>`); };
-$('btnComet').onclick = () => {
-  if (G.state !== 'play' || G.cometQ) return;
-  if (G.freeComet > 0) G.freeComet--;
-  else if (!DEMO) { if (S.credits < COMET_COST) { toast('크레딧이 부족해요'); return; } S.credits -= COMET_COST; Store.save(); }
-  G.cometQ = true;
+// ☄ 혜성 폭탄: 한 판에 최대 COMET_MAX회, 첫 1회 무료, 이후 지갑에서 COMET_COST 차감
+$('btnComet').onclick = async () => {
+  if (G.state !== 'play' || G.cometQ || G.cometPaying) return;
+  if (G.cometUsed >= COMET_MAX) { toast(`이번 판 혜성 ${COMET_MAX}회를 다 썼어요`); return; }
+  if (G.cometUsed > 0) {
+    if (!signedIn()) { toast('추가 혜성은 로그인 후 크레딧으로 쓸 수 있어요'); return; }
+    G.cometPaying = true; const run = G.runId, n = G.cometUsed + 1;
+    try { const r = await Cloud.walletApply({ logId: `cosmo:bomb:${run}:${n}`, amount: -COMET_COST, reason: 'bomb', refId: run }); W.bal = r.balance; refreshMeta(); }
+    catch (e) { G.cometPaying = false; if (errCode(e) === 'wallet/insufficient') toast(`크레딧이 부족해요 (잔액 ✦${fmt(e.balance || 0)}, 필요 ✦${COMET_COST})`, 3500); else payFail(e, '혜성'); return; }
+    G.cometPaying = false; if (G.state !== 'play' || G.runId !== run) return;
+  }
+  G.cometUsed++; G.cometQ = true;
 };
 $('modal').addEventListener('click', e => { if (e.target === $('modal') && G.state === 'home') closeModal(); });
 
@@ -908,15 +998,16 @@ function frame(ts) {
 }
 async function boot() {
   Store.load(); layout(); G.orbitDays = realOrbitDays(); refreshMeta();
-  if (DEMO) document.querySelector('#btnPlay em').textContent = 'DEMO 무료';
   window.addEventListener('resize', layout);
-  await loadImages(); requestAnimationFrame(frame); maybeDaily();
+  await loadImages(); requestAnimationFrame(frame);
   const cfg = window.FIREBASE_CONFIG;
   if (cfg && cfg.apiKey) {
-    try { const m = await import('./cloud.js'); await m.initCloud(cfg); refreshMeta(); }
-    catch (e) { window.__cloudError = errCode(e); console.warn('[cosmo] Firebase 연결 실패 — 게스트 모드로 진행', e); }
-  }
+    // 로그인 여부가 확인되면 onCloudUser가 출석 시트를 띄움 (게스트 화면이 먼저 뜨지 않게)
+    try { const m = await import('./cloud.js'); await m.initCloud(cfg); refreshMeta(); setTimeout(maybeDaily, 2500); }
+    catch (e) { window.__cloudError = errCode(e); console.warn('[cosmo] Firebase 연결 실패 — 게스트 모드로 진행', e); maybeDaily(); }
+  } else maybeDaily();
+  setInterval(refreshMeta, 60000);        // 자정이 지나면 무료 횟수 표시 갱신
 }
-window.__cp = { G, S: () => S, PLANETS, planetGrab, planetRelease, trackU, findHintMove, findGroups, typeCounts, dragStart, dragTo, dragEnd, startGame, buildStage, L };
+window.__cp = { G, S: () => S, W, freeLeft, dev, PLANETS, planetGrab, planetRelease, trackU, findHintMove, findGroups, typeCounts, dragStart, dragTo, dragEnd, startGame, buildStage, L };
 boot();
 })();
