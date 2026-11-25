@@ -112,3 +112,6 @@ b{font-weight:800}
 .help ul{padding-left:18px;margin:8px 0}
 .toast{position:absolute;left:50%;bottom:120px;transform:translateX(-50%);z-index:30;padding:10px 18px;border-radius:999px;
   background:rgba(10,6,30,.92);border:1px solid rgba(190,160,255,.5);font-size:13px;white-space:nowrap;animation:pop .25s}
+#loginPhoto{width:26px;height:26px;border-radius:50%;object-fit:cover}
+#loginOut{font-size:11px;color:#777;border:1px solid #ccc;border-radius:999px;padding:2px 8px;margin-left:4px}
+.toast{max-width:92%;white-space:normal;text-align:center}

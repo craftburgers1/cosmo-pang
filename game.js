@@ -44,6 +44,13 @@ const yesterday = () => { const d = new Date(); d.setDate(d.getDate() - 1); retu
 const SAVE_KEY = 'cosmopang.v1';
 const defaults = () => ({ credits: 50, best: 0, bestStage: 0, maxCombo: 0, games: 0, total: 0, streak: 0, lastClaim: '', sound: true, updatedAt: 0 });
 let S = defaults();
+const DEVICE_KEY = 'cosmopang.device';
+function deviceRecord(upd) {
+  let d = { best: 0, bestStage: 0 };
+  try { d = Object.assign(d, JSON.parse(localStorage.getItem(DEVICE_KEY) || '{}')); } catch (e) { /* 무시 */ }
+  if (upd) { d.best = Math.max(d.best, upd.best); d.bestStage = Math.max(d.bestStage, upd.bestStage); try { localStorage.setItem(DEVICE_KEY, JSON.stringify(d)); } catch (e) { /* 무시 */ } }
+  return d;
+}
 const Store = {
   load() {
     try { const j = JSON.parse(localStorage.getItem(SAVE_KEY) || 'null'); if (j) S = Object.assign(defaults(), j); } catch (e) { /* 저장소 사용 불가 → 메모리만 */ }
@@ -477,6 +484,7 @@ async function failStage(why) {
   const isBest = G.score > S.best;
   G.earned = Math.min(5, G.cleared);
   S.best = Math.max(S.best, G.score); S.bestStage = Math.max(S.bestStage || 0, G.cleared); S.maxCombo = Math.max(S.maxCombo, G.maxCombo); S.total += G.score; S.credits += G.earned;
+  deviceRecord({ best: G.score, bestStage: G.cleared });
   Store.save(); G.state = 'over'; G.busy = false;
   if (isBest) Snd.fever(); else Snd.coin();
   openModal(`
@@ -489,7 +497,7 @@ async function failStage(why) {
     <div class="kv"><span>최대 콤보 / 최대 파도 연쇄</span><b>${G.maxCombo} / ${G.maxWave || 0}</b></div>
     <div class="kv"><span>획득 크레딧 (클리어 1판당 1)</span><b><span class="star">✦</span> +${G.earned}</b></div>
     <div class="btnrow"><button class="btn" data-act="home">홈으로</button><button class="btn primary" style="font-size:16px;padding:12px;animation:none" data-act="replay">다시 하기 <em>${DEMO ? '무료' : '✦' + PLAY_COST}</em></button></div>
-    ${window.Cloud && Cloud.user ? '' : '<p style="font-size:11px;opacity:.7;margin-top:12px">Google 로그인하면 기록이 저장되고 랭킹에 올라가요</p>'}`);
+    ${window.Cloud && Cloud.user ? '' : '<p style="font-size:11px;opacity:.7;margin-top:12px">Google 로그인하면 기록이 계정에 저장돼요</p>'}`);
 }
 function goHome() { G.state = 'home'; $('hud').classList.add('hidden'); $('home').classList.remove('hidden'); closeModal(); refreshMeta(); maybeDaily(); }
 
@@ -791,7 +799,7 @@ window.addEventListener('pointercancel', () => { planetRelease(); dragEnd(); });
 
 // ───────────────────────── 메타 UI ─────────────────────────
 let toastTimer = 0;
-function toast(s) { const t = $('toast'); t.textContent = s; t.classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add('hidden'), 2400); }
+function toast(s, ms = 2400) { const t = $('toast'); t.textContent = s; t.classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add('hidden'), ms); }
 function openModal(html) { $('sheet').innerHTML = html; $('modal').classList.remove('hidden'); }
 function closeModal() { $('modal').classList.add('hidden'); }
 function refreshMeta() {
@@ -801,8 +809,10 @@ function refreshMeta() {
   $('dailyDot').classList.toggle('hidden', S.lastClaim === today());
   $('btnSound').style.opacity = S.sound ? 1 : 0.4;
   const u = window.Cloud && Cloud.user;
-  $('loginLabel').textContent = u ? `${u.name} · 로그아웃` : 'Google 계정으로 로그인';
-  $('saveNote').textContent = u ? '클라우드에 자동 저장 중 ☁' : '게스트 모드 · 이 기기에만 저장됩니다';
+  $('loginLabel').textContent = u ? u.name : 'Google 계정으로 로그인';
+  $('loginOut').classList.toggle('hidden', !u); $('loginG').classList.toggle('hidden', !!(u && u.photo));
+  const ph = $('loginPhoto'); ph.classList.toggle('hidden', !(u && u.photo)); if (u && u.photo && ph.getAttribute('src') !== u.photo) ph.src = u.photo;
+  $('saveNote').textContent = (u ? (Cloud.loaded ? '계정에 자동 저장 중 ☁' : '클라우드 연결 실패 · 이 기기에만 저장 중') : '게스트 모드 · 이 기기에만 저장됩니다') + (DEMO ? ' · 데모(크레딧 무제한)' : '');
 }
 function dailyInfo() {
   const can = S.lastClaim !== today();
@@ -844,23 +854,24 @@ function showHelp() {
     <li><b>혜성</b> — 가끔 한 줄을 쓸어줍니다. ☄ 버튼은 판마다 1회 무료.</li></ul></div>
     <button class="btn" data-act="close" style="width:100%">확인</button>`);
 }
-async function showRank() {
-  if (!(window.Cloud && Cloud.ready)) { openModal(`<h2>랭킹</h2><p>랭킹은 Google 로그인(Firebase) 설정 후 이용할 수 있어요.</p><button class="btn" data-act="close" style="width:100%">닫기</button>`); return; }
-  openModal('<h2>랭킹</h2><p>불러오는 중…</p>');
-  try {
-    const rows = await Cloud.board(), me = Cloud.user && Cloud.user.uid;
-    const esc = s => String(s).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
-    openModal(`<h2>랭킹 TOP 20</h2><div class="rank">${rows.map((r, i) => `<div class="${r.uid === me ? 'me' : ''}"><i>${i + 1}</i><span>${esc(r.name || '탐험가')}</span><b>${fmt(r.best)}</b></div>`).join('') || '<p>아직 기록이 없어요. 첫 번째 주인공이 되어보세요!</p>'}</div>
-      <button class="btn" data-act="close" style="width:100%;margin-top:12px">닫기</button>`);
-  } catch (e) { openModal(`<h2>랭킹</h2><p>랭킹을 불러오지 못했어요.<br>잠시 후 다시 시도해주세요.</p><button class="btn" data-act="close" style="width:100%">닫기</button>`); }
+function showRank() {
+  const u = window.Cloud && Cloud.user, d = deviceRecord();
+  openModal(`<h2>내 기록</h2>
+    <p>${u ? `${u.name}님 계정에 저장된 기록이에요` : '로그인하면 기록이 계정에 저장되어 다른 기기에서도 이어집니다'}</p>
+    <div class="kv"><span>${u ? '내 계정' : '현재'} 최고 점수</span><b>${fmt(S.best)}</b></div>
+    <div class="kv"><span>${u ? '내 계정' : '현재'} 최고 스테이지</span><b>${S.bestStage || 0}</b></div>
+    <div class="kv"><span>최대 콤보 · 플레이 횟수</span><b>${S.maxCombo} · ${S.games}판</b></div>
+    <div class="kv"><span>이 기기 최고 점수</span><b>${fmt(d.best)}</b></div>
+    <div class="kv"><span>이 기기 최고 스테이지</span><b>${d.bestStage}</b></div>
+    <button class="btn" data-act="close" style="width:100%;margin-top:14px">닫기</button>`);
 }
+const errCode = e => (e && (e.code || e.message)) || '알 수 없는 오류';
 async function login() {
-  if (window.Cloud && Cloud.user) { await Cloud.signOut(); toast('로그아웃했어요'); return; }
-  if (!(window.Cloud && Cloud.ready)) {
-    openModal(`<h2>Google 로그인</h2><p>아직 Firebase 설정이 연결되지 않았어요.<br><code>firebase-config.js</code>에 프로젝트 키를 넣으면 바로 켜집니다.<br>(설정 방법은 README 참고)</p><p>지금은 게스트 모드로 이 기기에 저장돼요.</p><button class="btn" data-act="close" style="width:100%">확인</button>`); return;
-  }
-  try { await Cloud.signIn(); } catch (e) { toast('로그인에 실패했어요: ' + (e.code || e.message || '')); }
+  if (window.Cloud && Cloud.user) { try { await Cloud.signOut(); toast('로그아웃했어요'); } catch (e) { toast('로그아웃 실패: ' + errCode(e)); } return; }
+  if (!(window.Cloud && Cloud.ready)) { toast('Firebase 연결 실패: ' + (window.__cloudError || 'firebase-config.js 확인 필요')); return; }
+  try { await Cloud.signIn(); } catch (e) { console.warn('[cosmo] 로그인 실패', e); toast('로그인 실패: ' + errCode(e), 6000); }
 }
+window.onCloudError = e => toast('로그인 실패: ' + errCode(e), 6000);
 // 로그인 완료 시 클라우드 데이터와 병합 (클라우드 우선, 최고 기록은 큰 값)
 window.onCloudUser = (user, cloud) => {
   if (user && cloud) {
@@ -868,7 +879,7 @@ window.onCloudUser = (user, cloud) => {
     S.best = Math.max(cloud.best || 0, local.best); S.maxCombo = Math.max(cloud.maxCombo || 0, local.maxCombo); S.bestStage = Math.max(cloud.bestStage || 0, local.bestStage || 0);
     try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); } catch (e) { /* 무시 */ }
   }
-  if (user) { if (!cloud) Cloud.save(S); toast(`${user.name}님, 환영해요!`); }
+  if (user) { if (!cloud) Cloud.save(S); toast(Cloud.loaded ? `${user.name}님, 환영해요!` : '로그인됨 · 클라우드 불러오기 실패(콘솔 확인)'); }
   refreshMeta(); maybeDaily();
 };
 
@@ -897,13 +908,13 @@ function frame(ts) {
 }
 async function boot() {
   Store.load(); layout(); G.orbitDays = realOrbitDays(); refreshMeta();
-  if (DEMO) { document.querySelector('#btnPlay em').textContent = 'DEMO 무료'; $('saveNote').textContent = '데모 버전 · 크레딧 무제한'; }
+  if (DEMO) document.querySelector('#btnPlay em').textContent = 'DEMO 무료';
   window.addEventListener('resize', layout);
   await loadImages(); requestAnimationFrame(frame); maybeDaily();
   const cfg = window.FIREBASE_CONFIG;
   if (cfg && cfg.apiKey) {
     try { const m = await import('./cloud.js'); await m.initCloud(cfg); refreshMeta(); }
-    catch (e) { console.warn('Firebase 연결 실패 — 게스트 모드로 진행', e); }
+    catch (e) { window.__cloudError = errCode(e); console.warn('[cosmo] Firebase 연결 실패 — 게스트 모드로 진행', e); }
   }
 }
 window.__cp = { G, S: () => S, PLANETS, planetGrab, planetRelease, trackU, findHintMove, findGroups, typeCounts, dragStart, dragTo, dragEnd, startGame, buildStage, L };
